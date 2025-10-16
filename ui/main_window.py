@@ -1,7 +1,7 @@
 # In ui/main_window.py
-from PyQt6.QtWidgets import QMainWindow, QWidget, QHBoxLayout, QVBoxLayout, QFileDialog, QSplitter, QDialog, QWidgetAction
+from PyQt6.QtWidgets import QMainWindow, QWidget, QHBoxLayout, QVBoxLayout, QFileDialog, QSplitter, QDialog, QWidgetAction, QMessageBox
 from PyQt6.QtCore import QThread, QObject, pyqtSignal, Qt, pyqtSlot
-from PyQt6.QtGui import QAction, QActionGroup
+from PyQt6.QtGui import QAction, QActionGroup, QIcon, QPixmap
 import pyqtgraph as pg
 from scipy.io import savemat, loadmat
 import numpy as np
@@ -15,9 +15,10 @@ from ui.widgets.frequency_domain_widget import FrequencyDomainWidget
 from .widgets.review_dialog import ReviewDialog
 from networking.data_receiver import HOST, PORT
 from .widgets.band_power_widget import BandPowerWidget
-from .widgets.ble_scan_dialog import BleScanDialog
+from .widgets.refined_ble_scan_dialog import RefinedBleScanDialog
 from networking.bluetooth_receiver import BluetoothDataReceiver
 from .widgets.settings_panel import SettingsPanel
+from .widgets.connection_panel import ConnectionPanel
 
 class FileSaver(QObject):
     finished = pyqtSignal(str) # Signal to report status back
@@ -91,10 +92,12 @@ class FileLoader(QObject):
 class MainWindow(QMainWindow):
     sample_rate_changed = pyqtSignal(int)
     frames_per_packet_changed = pyqtSignal(int)
-    connect_action_triggered = pyqtSignal(str)
-    disconnect_action_triggered = pyqtSignal()
     def __init__(self):
         super().__init__()
+        # Logo
+        app_icon = QIcon("icons/logo.png")
+        self.setWindowIcon(app_icon)
+
         self.setWindowTitle("ExGMP")
         self.setGeometry(50, 50, 1800, 1000)
         pg.setConfigOption('background', '#FFFFFF')
@@ -118,7 +121,7 @@ class MainWindow(QMainWindow):
 
         self._create_menu_bar()
 
-        self.ble_scan_dialog = BleScanDialog(self)
+        self.ble_scan_dialog = RefinedBleScanDialog(self)
 
         self.review_dialog = None
         self.is_session_running = False
@@ -134,30 +137,20 @@ class MainWindow(QMainWindow):
         menu_bar = self.menuBar()
         # connection menu
         connection_menu = menu_bar.addMenu("Connection")
-        # A. 创建连接方式子菜单
-        conn_type_menu = connection_menu.addMenu("Connection Type")
-        self.conn_type_group = QActionGroup(self)
-        self.conn_type_group.setExclusive(True)
-        conn_types = ["WiFi", "Bluetooth"]
-        for conn_type in conn_types:
-            action = QAction(conn_type, self)
-            action.setCheckable(True)
-            action.setData(conn_type)
-            if conn_type == "WiFi":  # 默认选中 WiFi
-                action.setChecked(True)
-            conn_type_menu.addAction(action)
-            self.conn_type_group.addAction(action)
-        connection_menu.addSeparator()  # 添加一条分割线
 
-        # B. 创建 Connect 和 Disconnect 动作
-        self.connect_action = QAction("Connect", self)
-        self.connect_action.triggered.connect(self._on_connect_action)
-        connection_menu.addAction(self.connect_action)
+        # 创建我们的自定义连接面板实例
+        self.connection_panel = ConnectionPanel(self)
 
-        self.disconnect_action = QAction("Disconnect", self)
-        self.disconnect_action.triggered.connect(self.disconnect_action_triggered.emit)
-        self.disconnect_action.setEnabled(False)  # 初始为禁用
-        connection_menu.addAction(self.disconnect_action)
+        # 将面板的信号直接连接到 MainWindow 的槽函数
+        self.connection_panel.connect_clicked.connect(self.on_connect_clicked)
+        self.connection_panel.disconnect_clicked.connect(self.stop_session)
+
+        # 创建一个 QWidgetAction 来容纳我们的面板
+        conn_widget_action = QWidgetAction(self)
+        conn_widget_action.setDefaultWidget(self.connection_panel)
+
+        # 将这个特殊的 action 添加到菜单
+        connection_menu.addAction(conn_widget_action)
 
         # 创建 "Settings" 菜单
         # --- 2. 新的、交互式的 Settings 菜单 ---
@@ -178,6 +171,11 @@ class MainWindow(QMainWindow):
         # 注意：这里的信号是 self.settings_panel 发出的，而不是旧的 QActionGroup
         self.settings_panel.sample_rate_changed.connect(self._on_sample_rate_changed)
         self.settings_panel.frames_per_packet_changed.connect(self._on_frames_changed)
+
+        help_menu = menu_bar.addMenu("Help")
+        about_action = QAction("About ExGMP", self)
+        about_action.triggered.connect(self.show_about_dialog)
+        help_menu.addAction(about_action)
 
     def _on_connect_action(self):
         # 获取当前选中的连接类型
@@ -209,9 +207,6 @@ class MainWindow(QMainWindow):
         self.processor_thread.started.connect(self.data_processor.start)
 
     def setup_connections(self):
-        # Connection
-        self.connect_action_triggered.connect(self.on_connect_clicked)
-        self.disconnect_action_triggered.connect(self.stop_session)
         # Control Panel -> MainWindow / DataProcessor
         self.control_panel.open_file_clicked.connect(self.open_file)
         self.control_panel.start_recording_clicked.connect(self.data_processor.start_recording)
@@ -403,7 +398,7 @@ class MainWindow(QMainWindow):
 
     def update_ui_on_connection(self, is_connected):
         self.is_session_running = is_connected
-        self.update_menu_actions(is_connected)
+        self.connection_panel.update_status(is_connected)
         self.control_panel.start_rec_btn.setEnabled(is_connected)
         if not is_connected:
             self.control_panel.stop_rec_btn.setEnabled(False)
@@ -450,3 +445,27 @@ class MainWindow(QMainWindow):
         # 2. 在确认所有线程都已结束后，再安全地接受关闭事件
         print("All threads stopped. Accepting close event.")
         event.accept()
+
+    def show_about_dialog(self):
+        """显示程序的“关于”对话框"""
+        about_dialog = QMessageBox(self)
+        about_dialog.setWindowTitle("About ExGMP")
+
+        # 设置左侧的Logo图标 (QPixmap用于显示图片)
+        logo_pixmap = QPixmap("icons/logo.png")
+        # 将其缩放到合适的大小，例如 64x64，并保持宽高比
+        scaled_logo = logo_pixmap.scaled(64, 64, Qt.AspectRatioMode.KeepAspectRatio,
+                                         Qt.TransformationMode.SmoothTransformation)
+        about_dialog.setIconPixmap(scaled_logo)
+
+        # 设置右侧的文本内容 (支持HTML格式)
+        about_dialog.setTextFormat(Qt.TextFormat.RichText)
+        about_dialog.setText(
+            "<h2>ExG Monitor Platform</h2>"
+            "<p>Version 1.0</p>"
+            "<p>An application for ExG data acquisition and analysis.</p>"
+            "<p>Developed by BioSignal Link.</p>"
+            "<p>&copy; 2025.10.16</p>"
+        )
+
+        about_dialog.exec()
