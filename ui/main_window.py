@@ -1,5 +1,5 @@
 # In ui/main_window.py
-from PyQt6.QtWidgets import QMainWindow, QWidget, QHBoxLayout, QVBoxLayout, QFileDialog, QSplitter
+from PyQt6.QtWidgets import QMainWindow, QWidget, QHBoxLayout, QVBoxLayout, QFileDialog, QSplitter, QDialog
 from PyQt6.QtCore import QThread, QObject, pyqtSignal, Qt, pyqtSlot
 from PyQt6.QtGui import QAction, QActionGroup
 import pyqtgraph as pg
@@ -15,6 +15,8 @@ from ui.widgets.frequency_domain_widget import FrequencyDomainWidget
 from .widgets.review_dialog import ReviewDialog
 from networking.data_receiver import HOST, PORT
 from .widgets.band_power_widget import BandPowerWidget
+from .widgets.ble_scan_dialog import BleScanDialog
+from networking.bluetooth_receiver import BluetoothDataReceiver
 
 class FileSaver(QObject):
     finished = pyqtSignal(str) # Signal to report status back
@@ -87,6 +89,9 @@ class FileLoader(QObject):
 
 class MainWindow(QMainWindow):
     sample_rate_changed = pyqtSignal(int)
+    frames_per_packet_changed = pyqtSignal(int)
+    connect_action_triggered = pyqtSignal(str)
+    disconnect_action_triggered = pyqtSignal()
     def __init__(self):
         super().__init__()
         self.setWindowTitle("ExGMP")
@@ -112,14 +117,48 @@ class MainWindow(QMainWindow):
 
         self._create_menu_bar()
 
+        self.ble_scan_dialog = BleScanDialog(self)
+
         self.review_dialog = None
         self.is_session_running = False
+        self.receiver_thread = None
+        self.receiver_instance = None
         self.setup_threads()
         self.setup_connections()
+
+        self.is_shutting_down = False
 
     def _create_menu_bar(self):
         # 获取 QMainWindow 默认的菜单栏
         menu_bar = self.menuBar()
+
+        connection_menu = menu_bar.addMenu("Connection")
+
+        # A. 创建连接方式子菜单
+        conn_type_menu = connection_menu.addMenu("Connection Type")
+        self.conn_type_group = QActionGroup(self)
+        self.conn_type_group.setExclusive(True)
+        conn_types = ["WiFi", "Bluetooth"]
+        for conn_type in conn_types:
+            action = QAction(conn_type, self)
+            action.setCheckable(True)
+            action.setData(conn_type)
+            if conn_type == "WiFi":  # 默认选中 WiFi
+                action.setChecked(True)
+            conn_type_menu.addAction(action)
+            self.conn_type_group.addAction(action)
+
+        connection_menu.addSeparator()  # 添加一条分割线
+
+        # B. 创建 Connect 和 Disconnect 动作
+        self.connect_action = QAction("Connect", self)
+        self.connect_action.triggered.connect(self._on_connect_action)
+        connection_menu.addAction(self.connect_action)
+
+        self.disconnect_action = QAction("Disconnect", self)
+        self.disconnect_action.triggered.connect(self.disconnect_action_triggered.emit)
+        self.disconnect_action.setEnabled(False)  # 初始为禁用
+        connection_menu.addAction(self.disconnect_action)
 
         # 创建 "Settings" 菜单
         settings_menu = menu_bar.addMenu("Settings")
@@ -150,6 +189,37 @@ class MainWindow(QMainWindow):
         # 连接 action group 的触发信号到一个新的槽函数
         self.rate_action_group.triggered.connect(self._on_sample_rate_action)
 
+        # --- 创建帧数子菜单 ---
+        frames_menu = settings_menu.addMenu("Frames Per Packet")
+        self.frames_action_group = QActionGroup(self)
+        self.frames_action_group.setExclusive(True)
+
+        # 提供与您的设备匹配的选项
+        frame_options = [10, 50, 100]
+        for frames in frame_options:
+            action = QAction(f"{frames}", self)
+            action.setCheckable(True)
+            action.setData(frames)
+            # 默认选中 50
+            if frames == 50:
+                action.setChecked(True)
+            frames_menu.addAction(action)
+            self.frames_action_group.addAction(action)
+
+        self.frames_action_group.triggered.connect(self._on_frames_action)
+
+    def _on_connect_action(self):
+        # 获取当前选中的连接类型
+        selected_action = self.conn_type_group.checkedAction()
+        if selected_action:
+            conn_type = selected_action.data()
+            self.connect_action_triggered.emit(conn_type)
+
+    def update_menu_actions(self, is_connected):
+        """根据连接状态更新 Connect/Disconnect 菜单项的可用性"""
+        self.connect_action.setEnabled(not is_connected)
+        self.disconnect_action.setEnabled(is_connected)
+
     def _on_sample_rate_action(self, action):
         # 从被触发的 action 中获取我们之前附加的采样率数据
         rate = action.data()
@@ -157,38 +227,69 @@ class MainWindow(QMainWindow):
             self.sample_rate_changed.emit(rate)
             print(f"Menu Event: Sample rate changed to {rate} Hz.")
 
+    def _on_frames_action(self, action):
+        frames = action.data()
+        if frames:
+            self.frames_per_packet_changed.emit(frames)
+            print(f"Menu Event: Frames per packet changed to {frames}.")
+
     def setup_threads(self):
-        self.receiver_thread = QThread()
-        self.data_receiver = DataReceiver()
-        self.data_receiver.moveToThread(self.receiver_thread)
-        self.receiver_thread.started.connect(self.data_receiver.run)
+        # 只创建和配置数据处理器线程
         self.processor_thread = QThread()
         self.data_processor = DataProcessor()
         self.data_processor.moveToThread(self.processor_thread)
         self.processor_thread.started.connect(self.data_processor.start)
 
     def setup_connections(self):
+        # Connection
+        self.connect_action_triggered.connect(self.on_connect_clicked)
+        self.disconnect_action_triggered.connect(self.stop_session)
+        # Control Panel -> MainWindow / DataProcessor
         self.control_panel.open_file_clicked.connect(self.open_file)
         self.control_panel.start_recording_clicked.connect(self.data_processor.start_recording)
         self.control_panel.stop_recording_clicked.connect(self.data_processor.stop_recording)
         self.control_panel.add_marker_clicked.connect(self.data_processor.add_marker)
-        self.data_processor.recording_finished.connect(self.save_recording_data)
-        self.control_panel.connect_clicked.connect(self.start_session)
-        self.control_panel.disconnect_clicked.connect(self.stop_session)
+        # Control Panel -> TimeDomainWidget / DataProcessor (Filters, etc.)
         self.control_panel.channel_visibility_changed.connect(self.time_domain_widget.toggle_visibility)
         self.control_panel.channel_scale_changed.connect(self.time_domain_widget.adjust_scale)
-        self.data_receiver.connection_status.connect(self.control_panel.update_status)
-        self.data_receiver.raw_data_received.connect(self.data_processor.process_raw_data)
+        self.control_panel.notch_filter_changed.connect(self.data_processor.update_notch_filter)
+        self.control_panel.plot_duration_changed.connect(self.time_domain_widget.set_plot_duration)
+        self.control_panel.filter_settings_changed.connect(self.data_processor.update_filter_settings)
+        # DataProcessor -> UI
+        self.data_processor.recording_finished.connect(self.save_recording_data)
         self.data_processor.time_data_ready.connect(self.time_domain_widget.update_plot)
         self.data_processor.fft_data_ready.connect(self.freq_domain_widget.update_fft)
         self.data_processor.stats_ready.connect(self.control_panel.update_stats)
         self.data_processor.marker_added_live.connect(self.time_domain_widget.show_live_marker)
-        self.control_panel.plot_duration_changed.connect(self.time_domain_widget.set_plot_duration)
-        self.control_panel.filter_settings_changed.connect(self.data_processor.update_filter_settings)
         self.data_processor.band_power_ready.connect(self.band_power_widget.update_plot)
-        self.control_panel.notch_filter_changed.connect(self.data_processor.update_notch_filter)
+        # Settings Menu -> DataProcessor / TimeDomainWidget
         self.sample_rate_changed.connect(self.data_processor.set_sample_rate)
         self.sample_rate_changed.connect(self.time_domain_widget.set_sample_rate)
+
+    @pyqtSlot(str)
+    def on_connect_clicked(self, conn_type):
+        if self.is_session_running: return
+        if conn_type == "WiFi":
+            self.start_session(conn_type)
+        elif conn_type == "Bluetooth":
+            # 1. 临时连接信号
+            self.ble_scan_dialog.device_selected.connect(self.on_ble_device_selected)
+            # 2. 弹出对话框
+            self.ble_scan_dialog.exec_and_scan()
+            # 3. 操作结束后，断开连接，避免重复触发
+            try:
+                self.ble_scan_dialog.device_selected.disconnect(self.on_ble_device_selected)
+            except TypeError:
+                pass
+
+    @pyqtSlot(str, str)
+    def on_ble_device_selected(self, name, address):
+        """
+        这个槽函数在蓝牙扫描对话框中成功选择一个设备后被调用。
+        """
+        print(f"Device selected: {name} ({address})")
+        # 使用获取到的设备地址，启动一个蓝牙会话
+        self.start_session("Bluetooth", address=address)
 
     def open_file(self):
         filename, _ = QFileDialog.getOpenFileName(self, "Open EEG Data File", "", "MATLAB files (*.mat)")
@@ -220,13 +321,125 @@ class MainWindow(QMainWindow):
 
         self.load_thread.quit()
 
-    def start_session(self):
-        self.is_session_running = True
-        self.time_domain_widget.clear_plots()
-        self.freq_domain_widget.clear_plots()
+    def start_session(self, conn_type, address=None):
+        if self.is_session_running: return
+        self.time_domain_widget.clear_plots();
+        self.freq_domain_widget.clear_plots();
         self.band_power_widget.clear_plots()
+
+        if conn_type == "WiFi":
+            self.receiver_instance = DataReceiver()
+        elif conn_type == "Bluetooth":
+            self.receiver_instance = BluetoothDataReceiver(address)
+        else:
+            return
+
+        # --- 在这里，在实例被创建后，立即连接它的信号 ---
+        self.receiver_instance.connection_status.connect(self.on_connection_status_changed)
+        self.receiver_instance.raw_data_received.connect(self.data_processor.process_raw_data)
+        self.frames_per_packet_changed.connect(self.receiver_instance.set_frames_per_packet)
+
+        current_frames = self.frames_action_group.checkedAction().data()
+        self.receiver_instance.set_frames_per_packet(current_frames)
+
+        self.receiver_thread = QThread()
+        self.receiver_instance.moveToThread(self.receiver_thread)
+        self.receiver_thread.started.connect(self.receiver_instance.run)
+
+        # --- 关键修复 1: 监听线程的结束信号 ---
+        # 当线程真正结束后，我们再安全地清理对象
+        self.receiver_thread.finished.connect(self.on_receiver_thread_finished)
+
         self.receiver_thread.start()
         self.processor_thread.start()
+
+    def stop_session(self, blocking=False):
+        """
+        停止所有会话相关的活动。
+        此方法经过重新设计，可以安全地多次调用。
+        :param blocking: 如果为True，将阻塞并等待线程完全结束。
+        """
+        # 关键修复：移除了 'if not self.is_session_running: return'
+        # 确保即使用户先点击断开再关闭窗口，清理逻辑也能在 closeEvent 中完整执行。
+
+        # 仅在会话首次停止时打印消息，避免重复输出
+        if self.is_session_running:
+            print("Stopping session...")
+
+        self.is_session_running = False  # 立即更新状态
+
+        # 1. 立即更新UI并断开信号，防止任何排队的信号在UI销毁后被触发
+        self.update_ui_on_connection(False)
+        self.control_panel.update_status("Disconnecting...")
+
+        if self.receiver_instance:
+            try:
+                self.receiver_instance.connection_status.disconnect(self.on_connection_status_changed)
+                self.receiver_instance.raw_data_received.disconnect(self.data_processor.process_raw_data)
+            except TypeError:
+                pass  # 信号可能已经断开，忽略错误
+
+        if self.data_processor:
+            try:
+                # 这个断开对于修复 update_stats 错误至关重要
+                self.data_processor.stats_ready.disconnect(self.control_panel.update_stats)
+            except TypeError:
+                pass
+
+        # 2. 停止数据处理器
+        if self.processor_thread and self.processor_thread.isRunning():
+            self.data_processor.stop()  # 停止内部的Timers
+            self.processor_thread.quit()
+            if blocking: self.processor_thread.wait()
+
+        # 3. 停止数据接收器
+        if self.receiver_instance:
+            self.receiver_instance.stop()
+
+        # 4. 请求接收器线程退出
+        if self.receiver_thread and self.receiver_thread.isRunning():
+            self.receiver_thread.quit()
+            if blocking: self.receiver_thread.wait(2000)
+
+        if not blocking:
+            print("Non-blocking stop initiated.")
+
+    def on_receiver_thread_finished(self):
+        """
+        这个槽函数只会在 receiver_thread 的事件循环完全退出后才被调用。
+        这是进行最终清理和UI更新的最安全的地方。
+        """
+        if self.is_shutting_down:
+            print("Receiver thread finished during shutdown, skipping final UI updates.")
+            return
+        print("Receiver thread has finished.")
+        self.receiver_instance = None
+        self.receiver_thread = None
+
+        # 在所有后台活动都已确认停止后，最后一次、安全地更新UI
+        self.update_ui_on_connection(False)
+        self.control_panel.update_status("Disconnected")
+
+    @pyqtSlot(str)
+    def on_connection_status_changed(self, message):
+        is_connected = "Connected" in message or "已连接" in message
+        is_disconnected = "Disconnected" in message or "已断开" in message or "连接错误" in message
+        self.control_panel.update_status(message)
+        if is_connected:
+            self.update_ui_on_connection(True)
+        elif is_disconnected:
+            if self.is_session_running:
+                self.stop_session()
+            else:
+                self.update_ui_on_connection(False)
+
+    def update_ui_on_connection(self, is_connected):
+        self.is_session_running = is_connected
+        self.update_menu_actions(is_connected)
+        self.control_panel.start_rec_btn.setEnabled(is_connected)
+        if not is_connected:
+            self.control_panel.stop_rec_btn.setEnabled(False)
+            self.control_panel.add_marker_btn.setEnabled(False)
 
     @pyqtSlot(object)  # 使用更通用的 'object' 类型来接收信号
     def save_recording_data(self, data_to_save):
@@ -256,17 +469,16 @@ class MainWindow(QMainWindow):
         self.control_panel.update_status(message)
         self.save_thread.quit()
 
-
-    def stop_session(self):
-        self.is_session_running = False
-        self.data_receiver.stop()
-        self.data_processor.stop()
-        self.receiver_thread.quit()
-        self.receiver_thread.wait()
-        self.processor_thread.quit()
-        self.processor_thread.wait()
-        self.control_panel.update_status("Disconnected")
-
     def closeEvent(self, event):
-        self.stop_session()
+        """
+        在关闭窗口时，以【阻塞】模式停止会话，确保所有后台活动
+        在窗口被销毁前完全结束。
+        """
+        self.is_shutting_down = True
+        print("Close event triggered.")
+        # 1. 调用 stop_session 并传入 blocking=True
+        self.stop_session(blocking=True)
+
+        # 2. 在确认所有线程都已结束后，再安全地接受关闭事件
+        print("All threads stopped. Accepting close event.")
         event.accept()

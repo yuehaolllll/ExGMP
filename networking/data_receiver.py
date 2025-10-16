@@ -6,8 +6,6 @@ from PyQt6.QtCore import QObject, pyqtSignal, pyqtSlot
 HOST = '192.168.4.1'
 PORT = 3333
 NUM_CHANNELS = 8
-NUM_FRAMES_PER_PACKET = 50
-PACKET_SIZE = 1354
 PACKET_HEADER = b'\xaa\xbb\xcc\xdd'
 V_REF = 4.5
 GAIN = 24.0
@@ -21,6 +19,16 @@ class DataReceiver(QObject):
         super().__init__()
         self.sock = None
         self._is_running = False
+        self.num_frames_per_packet = 50  # 默认值
+        self.packet_size = 4 + (27 * self.num_frames_per_packet)
+
+    @pyqtSlot(int)
+    def set_frames_per_packet(self, frames):
+        """动态更新每包的帧数和包大小"""
+        self.num_frames_per_packet = frames
+        # 这里的 27 是每个通道的数据字节数，与 __init__ 中保持一致
+        self.packet_size = 4 + (27 * self.num_frames_per_packet)
+        print(f"WiFi Receiver: Frames per packet set to {self.num_frames_per_packet}")
 
     def _recv_all(self, n):
         buffer = bytearray()
@@ -31,9 +39,9 @@ class DataReceiver(QObject):
         return buffer
 
     def _parse_packet_vectorized(self, payload):
-        frames = np.frombuffer(payload, dtype=np.uint8).reshape((NUM_FRAMES_PER_PACKET, 27))
+        frames = np.frombuffer(payload, dtype=np.uint8).reshape((self.num_frames_per_packet, 27))
         channel_data = frames[:, 3:]
-        reshaped_data = channel_data.reshape((NUM_FRAMES_PER_PACKET, NUM_CHANNELS, 3))
+        reshaped_data = channel_data.reshape((self.num_frames_per_packet, NUM_CHANNELS, 3))
         b1, b2, b3 = reshaped_data[:, :, 0].astype(np.int32), reshaped_data[:, :, 1].astype(np.int32), reshaped_data[:, :, 2].astype(np.int32)
         raw_vals = (b1 << 16) | (b2 << 8) | b3
         raw_vals[raw_vals >= 0x800000] -= 0x1000000
@@ -64,7 +72,7 @@ class DataReceiver(QObject):
                         header_index = buffer.find(PACKET_HEADER)
                         if header_index == -1:
                             # 找不到包头，但可能只收了一部分，保留最后几个字节
-                            if len(buffer) > PACKET_SIZE:
+                            if len(buffer) > self.packet_size:
                                 print(f"Warning: Discarding {len(buffer)} bytes, no header found.")
                                 buffer.clear()
                             break  # 退出内层循环，等待更多数据
@@ -75,12 +83,12 @@ class DataReceiver(QObject):
                             del buffer[:header_index]
 
                         # 3. 检查是否有足够的数据构成一个完整的包
-                        if len(buffer) < PACKET_SIZE:
+                        if len(buffer) < self.packet_size:
                             break  # 退出内层循环，等待更多数据
 
                         # 4. 提取并处理
-                        raw_packet = buffer[:PACKET_SIZE]
-                        del buffer[:PACKET_SIZE]  # 从缓冲区中移除这个包
+                        raw_packet = buffer[:self.packet_size]
+                        del buffer[:self.packet_size]  # 从缓冲区中移除这个包
 
                         # 5. 只处理包头正确的包
                         if raw_packet[:4] == PACKET_HEADER:

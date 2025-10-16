@@ -20,8 +20,6 @@ class ControlPanel(QWidget):
     add_marker_clicked = pyqtSignal(str)  # Signal will carry the marker text
 
     # 定义信号，让主窗口知道发生了什么
-    connect_clicked = pyqtSignal()
-    disconnect_clicked = pyqtSignal()
     channel_visibility_changed = pyqtSignal(int, bool)
     channel_scale_changed = pyqtSignal(int, float)
     # plot length
@@ -40,22 +38,18 @@ class ControlPanel(QWidget):
         layout.setContentsMargins(10, 10, 10, 10)
         layout.setSpacing(15)
 
-        # 连接控制
-        conn_group = QGroupBox("Connection")
-        conn_layout = QGridLayout()
-        self.connect_btn = QPushButton("Connect")
-        self.disconnect_btn = QPushButton("Disconnect", enabled=False)
-        #self.open_btn = QPushButton("Open File")
-        self.status_lbl = QLabel("Status: Disconnected")
-        self.connect_btn.clicked.connect(self.connect_clicked.emit)
-        self.disconnect_btn.clicked.connect(self.disconnect_clicked.emit)
-        #self.open_btn.clicked.connect(self.open_file_clicked.emit)
+        # "Status & Statistics" GroupBox
+        status_group = QGroupBox("Status & Statistics")
+        status_layout = QVBoxLayout()
 
-        conn_layout.addWidget(self.connect_btn, 0, 0)
-        conn_layout.addWidget(self.disconnect_btn, 0, 1)
-        #conn_layout.addWidget(self.open_btn, 1, 0, 1, 2)
-        conn_layout.addWidget(self.status_lbl, 1, 0, 1, 2)
-        conn_group.setLayout(conn_layout)
+        self.status_lbl = QLabel("Status: Disconnected")
+        self.pps_lbl = QLabel("Packets/sec: 0")
+        self.kbs_lbl = QLabel("Data Rate: 0.0 KB/s")
+
+        status_layout.addWidget(self.status_lbl)
+        status_layout.addWidget(self.pps_lbl)
+        status_layout.addWidget(self.kbs_lbl)
+        status_group.setLayout(status_layout)
 
         # 记录
         rec_group = QGroupBox("Recording")
@@ -105,15 +99,6 @@ class ControlPanel(QWidget):
             self.ch_scale_labels.append(scale_lbl)
         ch_group.setLayout(ch_layout)
 
-        # 统计
-        stats_group = QGroupBox("Statistics")
-        stats_layout = QVBoxLayout()
-        self.pps_lbl = QLabel("Packets/sec: 0")
-        self.kbs_lbl = QLabel("Data Rate: 0.0 KB/s")
-        stats_layout.addWidget(self.pps_lbl)
-        stats_layout.addWidget(self.kbs_lbl)
-        stats_group.setLayout(stats_layout)
-
         #
         settings_group = QGroupBox("Display & Filter")
         settings_layout = QGridLayout()
@@ -161,11 +146,10 @@ class ControlPanel(QWidget):
         settings_group.setLayout(settings_layout)
 
         # 将所有 GroupBox 添加到主布局中
-        layout.addWidget(conn_group)
+        layout.addWidget(status_group)
         layout.addWidget(rec_group)
         layout.addWidget(settings_group)
         layout.addWidget(ch_group)
-        layout.addWidget(stats_group)
         layout.addStretch()
 
     def _on_sample_rate_selected(self, button):
@@ -231,42 +215,25 @@ class ControlPanel(QWidget):
             # self.marker_input.clear()
 
     def update_status(self, message):
-        """
-        这个函数现在只负责显示消息，并根据【特定】消息更新连接状态。
-        """
-        self.status_lbl.setText(f"Status: {message}")
-
-        # --- 关键修复：只有在收到明确的连接/断开消息时，才更新 is_connected 状态 ---
         is_connection_message = "Connected" in message or "已连接" in message
         is_disconnection_message = "Disconnected" in message or "已断开" in message or "连接错误" in message
+
+        # 只更新文本，不再自己管理按钮状态
+        self.status_lbl.setText(f"Status: {message}")
 
         if is_connection_message:
             self.is_connected = True
         elif is_disconnection_message:
             self.is_connected = False
-        # 如果是其他消息 (如 "Saving file...", "File saved..."),
-        # 我们【不改变】self.is_connected 的当前值。
-
-        # --- 现在，根据【可靠的】is_connected 状态来更新所有按钮 ---
-        self.connect_btn.setEnabled(not self.is_connected)
-        self.disconnect_btn.setEnabled(self.is_connected)
-
-        # 只有在【未处于录制中】时，才根据连接状态更新录制按钮
-        # 我们通过检查 Stop 按钮的状态来判断是否在录制
-        if not self.stop_rec_btn.isEnabled():
-            self.start_rec_btn.setEnabled(self.is_connected)
-
-        # "Open File" 按钮始终可用
-        self.open_btn.setEnabled(True)
-
-        if not self.is_connected:
-            # 只有在真正断开连接时，才重置这些状态
+            # 断开时重置统计数据
             self.pps_lbl.setText("Packets/sec: 0")
             self.kbs_lbl.setText("Data Rate: 0.0 KB/s")
-            self.stop_rec_btn.setEnabled(False)
-            self.add_marker_btn.setEnabled(False)
 
     def update_stats(self, packet_count):
+        # 防御性修复：如果控件不可见（很可能因为窗口正在关闭），则不执行任何操作。
+        if not self.isVisible():
+            return
+
         current_time = time.time(); elapsed = current_time - self.last_stat_time
         if elapsed > 0:
             pps = packet_count / elapsed
