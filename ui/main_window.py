@@ -1,5 +1,5 @@
 # In ui/main_window.py
-from PyQt6.QtWidgets import QMainWindow, QWidget, QHBoxLayout, QVBoxLayout, QFileDialog, QSplitter, QDialog
+from PyQt6.QtWidgets import QMainWindow, QWidget, QHBoxLayout, QVBoxLayout, QFileDialog, QSplitter, QDialog, QWidgetAction
 from PyQt6.QtCore import QThread, QObject, pyqtSignal, Qt, pyqtSlot
 from PyQt6.QtGui import QAction, QActionGroup
 import pyqtgraph as pg
@@ -17,6 +17,7 @@ from networking.data_receiver import HOST, PORT
 from .widgets.band_power_widget import BandPowerWidget
 from .widgets.ble_scan_dialog import BleScanDialog
 from networking.bluetooth_receiver import BluetoothDataReceiver
+from .widgets.settings_panel import SettingsPanel
 
 class FileSaver(QObject):
     finished = pyqtSignal(str) # Signal to report status back
@@ -131,9 +132,8 @@ class MainWindow(QMainWindow):
     def _create_menu_bar(self):
         # 获取 QMainWindow 默认的菜单栏
         menu_bar = self.menuBar()
-
+        # connection menu
         connection_menu = menu_bar.addMenu("Connection")
-
         # A. 创建连接方式子菜单
         conn_type_menu = connection_menu.addMenu("Connection Type")
         self.conn_type_group = QActionGroup(self)
@@ -147,7 +147,6 @@ class MainWindow(QMainWindow):
                 action.setChecked(True)
             conn_type_menu.addAction(action)
             self.conn_type_group.addAction(action)
-
         connection_menu.addSeparator()  # 添加一条分割线
 
         # B. 创建 Connect 和 Disconnect 动作
@@ -161,52 +160,24 @@ class MainWindow(QMainWindow):
         connection_menu.addAction(self.disconnect_action)
 
         # 创建 "Settings" 菜单
+        # --- 2. 新的、交互式的 Settings 菜单 ---
         settings_menu = menu_bar.addMenu("Settings")
 
-        # --- 创建采样率子菜单 ---
-        sample_rate_menu = settings_menu.addMenu("Sample Rate")
+        # 创建我们的自定义设置面板实例
+        self.settings_panel = SettingsPanel(default_rate=1000, default_frames=50)
 
-        # 使用 QActionGroup 来确保单选效果
-        self.rate_action_group = QActionGroup(self)
-        self.rate_action_group.setExclusive(True)  # 设为互斥
+        # 创建一个 QWidgetAction
+        widget_action = QWidgetAction(self)
+        # 将我们的面板设置为这个 action 的默认 Widget
+        widget_action.setDefaultWidget(self.settings_panel)
 
-        rates = [250, 500, 1000, 2000]
-        for rate in rates:
-            # 为每个采样率创建一个 QAction
-            action = QAction(f"{rate} Hz", self)
-            action.setCheckable(True)
-            # 将采样率值作为自定义数据附加到 action 上
-            action.setData(rate)
+        # 将这个特殊的 action 添加到 Settings 菜单
+        settings_menu.addAction(widget_action)
 
-            # 设置默认选中的项
-            if rate == 1000:
-                action.setChecked(True)
-
-            # 将 action 添加到菜单和 action group 中
-            sample_rate_menu.addAction(action)
-            self.rate_action_group.addAction(action)
-
-        # 连接 action group 的触发信号到一个新的槽函数
-        self.rate_action_group.triggered.connect(self._on_sample_rate_action)
-
-        # --- 创建帧数子菜单 ---
-        frames_menu = settings_menu.addMenu("Frames Per Packet")
-        self.frames_action_group = QActionGroup(self)
-        self.frames_action_group.setExclusive(True)
-
-        # 提供与您的设备匹配的选项
-        frame_options = [10, 50, 100]
-        for frames in frame_options:
-            action = QAction(f"{frames}", self)
-            action.setCheckable(True)
-            action.setData(frames)
-            # 默认选中 50
-            if frames == 50:
-                action.setChecked(True)
-            frames_menu.addAction(action)
-            self.frames_action_group.addAction(action)
-
-        self.frames_action_group.triggered.connect(self._on_frames_action)
+        # --- 3. 连接来自新面板的信号 ---
+        # 注意：这里的信号是 self.settings_panel 发出的，而不是旧的 QActionGroup
+        self.settings_panel.sample_rate_changed.connect(self._on_sample_rate_changed)
+        self.settings_panel.frames_per_packet_changed.connect(self._on_frames_changed)
 
     def _on_connect_action(self):
         # 获取当前选中的连接类型
@@ -220,18 +191,15 @@ class MainWindow(QMainWindow):
         self.connect_action.setEnabled(not is_connected)
         self.disconnect_action.setEnabled(is_connected)
 
-    def _on_sample_rate_action(self, action):
-        # 从被触发的 action 中获取我们之前附加的采样率数据
-        rate = action.data()
-        if rate:
-            self.sample_rate_changed.emit(rate)
-            print(f"Menu Event: Sample rate changed to {rate} Hz.")
+    @pyqtSlot(int)
+    def _on_sample_rate_changed(self, rate):
+        self.sample_rate_changed.emit(rate)
+        print(f"Menu Event: Sample rate changed to {rate} Hz.")
 
-    def _on_frames_action(self, action):
-        frames = action.data()
-        if frames:
-            self.frames_per_packet_changed.emit(frames)
-            print(f"Menu Event: Frames per packet changed to {frames}.")
+    @pyqtSlot(int)
+    def _on_frames_changed(self, frames):
+        self.frames_per_packet_changed.emit(frames)
+        print(f"Menu Event: Frames per packet changed to {frames}.")
 
     def setup_threads(self):
         # 只创建和配置数据处理器线程
@@ -339,7 +307,7 @@ class MainWindow(QMainWindow):
         self.receiver_instance.raw_data_received.connect(self.data_processor.process_raw_data)
         self.frames_per_packet_changed.connect(self.receiver_instance.set_frames_per_packet)
 
-        current_frames = self.frames_action_group.checkedAction().data()
+        current_frames = self.settings_panel.frames_button_group.checkedId()
         self.receiver_instance.set_frames_per_packet(current_frames)
 
         self.receiver_thread = QThread()
