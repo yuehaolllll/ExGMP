@@ -203,8 +203,13 @@ QSpinBox::down-arrow, QDoubleSpinBox::down-arrow {
 
 if __name__ == '__main__':
     app = QApplication(sys.argv)
-    #app.setStyle('Fusion')
     app.setStyleSheet(QSS_STYLE)
+
+    # 1. 创建主窗口实例
     window = MainWindow()
-    window.show()
+
+    # 2. 调用新的方法来显示窗口并开始启动流程
+    window.show_and_start_splash()
+
+    # 3. 启动应用主循环
     sys.exit(app.exec())

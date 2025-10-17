@@ -1,7 +1,8 @@
 # In ui/main_window.py
-from PyQt6.QtWidgets import QMainWindow, QWidget, QHBoxLayout, QVBoxLayout, QFileDialog, QSplitter, QDialog, QWidgetAction, QMessageBox
-from PyQt6.QtCore import QThread, QObject, pyqtSignal, Qt, pyqtSlot
-from PyQt6.QtGui import QAction, QActionGroup, QIcon, QPixmap
+from PyQt6.QtWidgets import (QMainWindow, QWidget, QHBoxLayout, QVBoxLayout, QFileDialog,
+                             QSplitter, QDialog, QWidgetAction, QMessageBox, QStackedWidget)
+from PyQt6.QtCore import QThread, QObject, pyqtSignal, Qt, pyqtSlot, QTimer
+from PyQt6.QtGui import QAction, QActionGroup, QIcon, QPixmap, QGuiApplication
 import pyqtgraph as pg
 from scipy.io import savemat, loadmat
 import numpy as np
@@ -19,6 +20,7 @@ from .widgets.refined_ble_scan_dialog import RefinedBleScanDialog
 from networking.bluetooth_receiver import BluetoothDataReceiver
 from .widgets.settings_panel import SettingsPanel
 from .widgets.connection_panel import ConnectionPanel
+from .widgets.splash_widget import SplashWidget
 
 class FileSaver(QObject):
     finished = pyqtSignal(str) # Signal to report status back
@@ -43,7 +45,7 @@ class FileLoader(QObject):
 
             clean_markers = None
 
-            # --- 新的加载逻辑：优先检查新的扁平格式 ---
+            # --- 优先检查新的扁平格式 ---
             if 'marker_timestamps' in mat and 'marker_labels' in mat:
                 print("Info: Loading new flat marker format.")
                 # 数据已经是干净的 1D 数组，直接使用
@@ -69,7 +71,6 @@ class FileLoader(QObject):
                     'labels': [str(item) for item in flat_labels]
                 }
 
-            # (函数的其余部分)
             n_samples = data.shape[1]
             windowed_data = data * np.hanning(n_samples)
             magnitudes = np.abs(np.fft.rfft(windowed_data, axis=1)) / n_samples
@@ -97,29 +98,23 @@ class MainWindow(QMainWindow):
         # Logo
         app_icon = QIcon("icons/logo.png")
         self.setWindowIcon(app_icon)
-
         self.setWindowTitle("ExGMP")
-        self.setGeometry(50, 50, 1800, 1000)
         pg.setConfigOption('background', '#FFFFFF')
         pg.setConfigOption('foreground', '#333333')
-        self.control_panel = ControlPanel()
-        self.time_domain_widget = TimeDomainWidget()
-        self.freq_domain_widget = FrequencyDomainWidget()
-        self.band_power_widget = BandPowerWidget()
-        main_widget = QWidget()
-        self.setCentralWidget(main_widget)
-        main_layout = QHBoxLayout(main_widget)
-        plot_layout = QVBoxLayout()
-        bottom_splitter = QSplitter(Qt.Orientation.Horizontal)
-        bottom_splitter.addWidget(self.freq_domain_widget)
-        bottom_splitter.addWidget(self.band_power_widget)
-        bottom_splitter.setSizes([700, 300])
-        plot_layout.addWidget(self.time_domain_widget, 4)
-        plot_layout.addWidget(bottom_splitter, 1)
-        main_layout.addWidget(self.control_panel, 1)
-        main_layout.addLayout(plot_layout, 4)
+        self.stacked_widget = QStackedWidget()
+        self.setCentralWidget(self.stacked_widget)  # 将堆叠窗口设为中心控件
 
-        self._create_menu_bar()
+        # --- 页面1: 启动动画 Widget ---
+        self.splash_widget = SplashWidget("icons/splash_animation.gif")
+        self.stacked_widget.addWidget(self.splash_widget)
+
+        # --- 页面2: 主交互界面 Widget ---
+        # 1. 创建一个容器 QWidget 用于主界面
+        main_ui_widget = QWidget()
+        # 2. 将您原来的所有UI组件放入这个容器中
+        self._setup_main_ui(main_ui_widget)
+        # 3. 将这个完整的容器添加到堆叠窗口
+        self.stacked_widget.addWidget(main_ui_widget)
 
         self.ble_scan_dialog = RefinedBleScanDialog(self)
 
@@ -131,6 +126,56 @@ class MainWindow(QMainWindow):
         self.setup_connections()
 
         self.is_shutting_down = False
+
+    def _setup_main_ui(self, parent_widget):
+        """
+        一个新方法，用于构建主交互界面。
+        我们将原来 __init__ 中的UI构建代码移到了这里。
+        """
+        self.control_panel = ControlPanel()
+        self.time_domain_widget = TimeDomainWidget()
+        self.freq_domain_widget = FrequencyDomainWidget()
+        self.band_power_widget = BandPowerWidget()
+
+        main_layout = QHBoxLayout(parent_widget)  # 使用传入的父控件
+        plot_layout = QVBoxLayout()
+        bottom_splitter = QSplitter(Qt.Orientation.Horizontal)
+        bottom_splitter.addWidget(self.freq_domain_widget)
+        bottom_splitter.addWidget(self.band_power_widget)
+        bottom_splitter.setSizes([700, 300])
+        plot_layout.addWidget(self.time_domain_widget, 4)
+        plot_layout.addWidget(bottom_splitter, 1)
+        main_layout.addWidget(self.control_panel, 1)
+        main_layout.addLayout(plot_layout, 4)
+
+        # 菜单栏的创建现在也属于主UI的一部分
+        self._create_menu_bar()
+
+    def show_and_start_splash(self):
+        """
+        一个由 main.py 调用的新方法，用于显示窗口并开始启动流程。
+        """
+        # 1. 设置您想要的窗口尺寸和位置
+        self.resize(1200, 900)
+        screen_geometry = QGuiApplication.primaryScreen().availableGeometry()
+        window_geometry = self.frameGeometry()
+        center_point = screen_geometry.center()
+        window_geometry.moveCenter(center_point)
+        self.move(window_geometry.topLeft())
+
+        # 2. 显示窗口
+        self.show()
+
+        # 3. 开始播放动画
+        self.splash_widget.start_animation()
+
+        # 4. 设置定时器，在4秒后切换到主界面
+        QTimer.singleShot(4000, self.switch_to_main_ui)
+
+    def switch_to_main_ui(self):
+        """切换到主交互界面"""
+        self.splash_widget.stop_animation()
+        self.stacked_widget.setCurrentIndex(1)  # 切换到索引为1的Widget
 
     def _create_menu_bar(self):
         # 获取 QMainWindow 默认的菜单栏
