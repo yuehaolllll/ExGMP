@@ -21,6 +21,7 @@ from networking.bluetooth_receiver import BluetoothDataReceiver
 from .widgets.settings_panel import SettingsPanel
 from .widgets.connection_panel import ConnectionPanel
 from .widgets.splash_widget import SplashWidget
+from networking.serial_receiver import SerialDataReceiver
 
 class FileSaver(QObject):
     finished = pyqtSignal(str) # Signal to report status back
@@ -274,21 +275,21 @@ class MainWindow(QMainWindow):
         self.sample_rate_changed.connect(self.data_processor.set_sample_rate)
         self.sample_rate_changed.connect(self.time_domain_widget.set_sample_rate)
 
-    @pyqtSlot(str)
-    def on_connect_clicked(self, conn_type):
+    @pyqtSlot(str, dict)  # 明确指定接收的参数类型
+    def on_connect_clicked(self, conn_type, params):
         if self.is_session_running: return
+
         if conn_type == "WiFi":
             self.start_session(conn_type)
         elif conn_type == "Bluetooth":
-            # 1. 临时连接信号
             self.ble_scan_dialog.device_selected.connect(self.on_ble_device_selected)
-            # 2. 弹出对话框
             self.ble_scan_dialog.exec_and_scan()
-            # 3. 操作结束后，断开连接，避免重复触发
             try:
                 self.ble_scan_dialog.device_selected.disconnect(self.on_ble_device_selected)
             except TypeError:
                 pass
+        elif conn_type == "Serial (UART)":
+            self.start_session(conn_type, params=params)
 
     @pyqtSlot(str, str)
     def on_ble_device_selected(self, name, address):
@@ -329,7 +330,7 @@ class MainWindow(QMainWindow):
 
         self.load_thread.quit()
 
-    def start_session(self, conn_type, address=None):
+    def start_session(self, conn_type, address=None, params=None):
         if self.is_session_running: return
         self.time_domain_widget.clear_plots();
         self.freq_domain_widget.clear_plots();
@@ -339,6 +340,11 @@ class MainWindow(QMainWindow):
             self.receiver_instance = DataReceiver()
         elif conn_type == "Bluetooth":
             self.receiver_instance = BluetoothDataReceiver(address)
+        elif conn_type == "Serial (UART)":
+            if not params:
+                print("Error: Serial connection requires parameters.")
+                return
+            self.receiver_instance = SerialDataReceiver(port=params["port"], baudrate=params["baudrate"])
         else:
             return
 
