@@ -15,7 +15,7 @@ class FrequencyDomainWidget(pg.GraphicsLayoutWidget):
         self.plot.setLabel('bottom', "Frequency", units='Hz')
         self.plot.setLabel('left', "Magnitude", units='µV')
         self.plot.setLogMode(x=False, y=False)
-        self.plot.setXRange(0, 120) # 只显示 0 到 120 Hz
+        self.plot.setXRange(0, 300) # 只显示 0 到 120 Hz
         self.plot.showGrid(x=True, y=True, alpha=0.3)
 
         self.curves = []
