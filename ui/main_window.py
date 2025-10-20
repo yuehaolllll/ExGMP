@@ -6,6 +6,7 @@ from PyQt6.QtGui import QAction, QActionGroup, QIcon, QPixmap, QGuiApplication
 import pyqtgraph as pg
 from scipy.io import savemat, loadmat
 import numpy as np
+import os
 
 # 导入所有模块
 from networking.data_receiver import DataReceiver
@@ -43,6 +44,11 @@ class FileLoader(QObject):
             mat = loadmat(filename, squeeze_me=True)
             data = mat['data']
             sampling_rate = float(mat['sampling_rate'])
+            channel_names = mat.get('channels', [f'CH {i + 1}' for i in range(data.shape[0])])
+            if isinstance(channel_names, str):
+                channel_names = [channel_names]
+            else:
+                channel_names = list(channel_names)
 
             clean_markers = None
 
@@ -83,7 +89,8 @@ class FileLoader(QObject):
                 'freqs': frequencies,
                 'mags': magnitudes,
                 'markers': clean_markers,  # 使用我们处理好的干净数据
-                'filename': filename.split('/')[-1]
+                'filename': filename.split('/')[-1],
+                'channels': channel_names
             }
             self.load_finished.emit(result)
 
@@ -255,7 +262,8 @@ class MainWindow(QMainWindow):
     def setup_connections(self):
         # Control Panel -> MainWindow / DataProcessor
         self.control_panel.open_file_clicked.connect(self.open_file)
-        self.control_panel.start_recording_clicked.connect(self.data_processor.start_recording)
+        #self.control_panel.start_recording_clicked.connect(self.data_processor.start_recording)
+        self.control_panel.start_recording_clicked.connect(self._on_start_recording_clicked)
         self.control_panel.stop_recording_clicked.connect(self.data_processor.stop_recording)
         self.control_panel.add_marker_clicked.connect(self.data_processor.add_marker)
         # Control Panel -> TimeDomainWidget / DataProcessor (Filters, etc.)
@@ -274,6 +282,10 @@ class MainWindow(QMainWindow):
         # Settings Menu -> DataProcessor / TimeDomainWidget
         self.sample_rate_changed.connect(self.data_processor.set_sample_rate)
         self.sample_rate_changed.connect(self.time_domain_widget.set_sample_rate)
+        # Edit channel names
+        self.control_panel.channel_name_changed.connect(self.time_domain_widget.update_channel_name)
+        self.control_panel.channel_name_changed.connect(self.freq_domain_widget.update_channel_name)
+        self.control_panel.channel_name_changed.connect(self.data_processor.update_single_channel_name)
 
     @pyqtSlot(str, dict)  # 明确指定接收的参数类型
     def on_connect_clicked(self, conn_type, params):
@@ -479,9 +491,34 @@ class MainWindow(QMainWindow):
 
     def on_save_finished(self, message):
         print(message)
+        status_to_display = message
+
+        if "File saved successfully to" in message:
+            # 1. 提取文件名用于打印日志（方便调试）
+            filepath = message.replace("File saved successfully to ", "")
+            filename = os.path.basename(filepath)
+            print(f"Save successful: {filename}")
+
+            # 2. 创建一个简短的消息用于UI显示
+            status_to_display = f"Saved: {filename}"
+
         self.control_panel.reset_recording_buttons()
-        self.control_panel.update_status(message)
+        self.control_panel.update_status(status_to_display)
         self.save_thread.quit()
+
+    def _on_start_recording_clicked(self):
+        """
+        在开始录制前，强制将UI上完整的通道名称列表同步到DataProcessor。
+        """
+        # 1. 从 ControlPanel 获取当前所有通道的名称
+        current_names = self.control_panel.get_channel_names()
+
+        # 2. 将这个完整的列表发送给 DataProcessor
+        #    这将覆盖掉 DataProcessor 中任何陈旧的状态
+        self.data_processor.set_channel_names(current_names)
+
+        # 3. 现在，命令 DataProcessor 开始录制
+        self.data_processor.start_recording()
 
     def closeEvent(self, event):
         """
