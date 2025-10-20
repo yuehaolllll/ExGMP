@@ -1,5 +1,6 @@
 # In ui/widgets/frequency_domain_widget.py
 import pyqtgraph as pg
+from PyQt6.QtCore import pyqtSlot
 
 NUM_CHANNELS = 8
 
@@ -28,9 +29,22 @@ class FrequencyDomainWidget(pg.GraphicsLayoutWidget):
 
         self.plot.addLegend()
 
-    def update_fft(self, freqs, mags):
+    def update_fft(self, freqs, mags, channel_names=None):
         for i in range(NUM_CHANNELS):
             self.curves[i].setData(freqs, mags[i])
+
+        if channel_names:
+            for i, name in enumerate(channel_names):
+                self.update_channel_name(i, name)
+
+    @pyqtSlot(int, str)
+    def update_channel_name(self, channel, new_name):
+        """更新FFT图例中对应通道的名称"""
+        if hasattr(self, 'legend') and self.legend and 0 <= channel < len(self.legend.items):
+            # legend.items 是一个元组列表 (sample, label)
+            # 我们需要更新 label 项的文本
+            label_item = self.legend.items[channel][1]
+            label_item.setText(new_name)
 
     def clear_plots(self):
         for curve in self.curves:

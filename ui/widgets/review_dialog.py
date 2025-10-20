@@ -27,13 +27,16 @@ class ReviewDialog(QDialog):
             self.setWindowTitle(f"Error Loading File: {result_dict['error']}")
             return
 
+        channel_names = result_dict.get('channels')
+
         self.time_domain_widget.display_static_data(
             result_dict['data'],
             result_dict['sampling_rate'],
-            result_dict.get('markers')  # Use .get() for safety
+            result_dict.get('markers'),  # Use .get() for safety
+            channel_names
         )
         # Use the static display methods of the plot widgets
-        self.frequency_domain_widget.update_fft(result_dict['freqs'], result_dict['mags'])
+        self.frequency_domain_widget.update_fft(result_dict['freqs'], result_dict['mags'], channel_names )
 
         # Update the window title to show the filename
         self.setWindowTitle(f"Reviewing: {result_dict['filename']}")

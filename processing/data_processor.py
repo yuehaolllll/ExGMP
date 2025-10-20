@@ -43,6 +43,20 @@ class DataProcessor(QObject):
         self.notch_enabled = False
         self.notch_b, self.notch_a, self.notch_zi = None, None, None
         self.update_notch_filter(False, 50.0)
+        self.channel_names = [f'CH {i + 1}' for i in range(NUM_CHANNELS)]
+
+    @pyqtSlot(list)
+    def set_channel_names(self, names):
+        """从主窗口接收更新后的通道名称列表"""
+        if len(names) == NUM_CHANNELS:
+            self.channel_names = names
+
+    @pyqtSlot(int, str)
+    def update_single_channel_name(self, channel_index, new_name):
+        """实时更新单个通道的名称"""
+        if 0 <= channel_index < len(self.channel_names):
+            self.channel_names[channel_index] = new_name
+            print(f"DataProcessor updated channel {channel_index} to '{new_name}'. Current names: {self.channel_names}")
 
     @pyqtSlot(int)
     def set_sample_rate(self, new_rate):
@@ -158,7 +172,7 @@ class DataProcessor(QObject):
         data_to_save = {
             'data': full_data,
             'sampling_rate': self.sampling_rate,
-            'channels': [f'CH {i + 1}' for i in range(NUM_CHANNELS)],
+            'channels': self.channel_names,
             'marker_timestamps': np.array(self.markers['timestamps']),
             'marker_labels': np.array(self.markers['labels']),
         }

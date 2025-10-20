@@ -18,6 +18,7 @@ class ControlPanel(QWidget):
     start_recording_clicked = pyqtSignal()
     stop_recording_clicked = pyqtSignal()
     add_marker_clicked = pyqtSignal(str)  # Signal will carry the marker text
+    channel_name_changed = pyqtSignal(int, str)  # (channel_index, new_name)
 
     # 定义信号，让主窗口知道发生了什么
     channel_visibility_changed = pyqtSignal(int, bool)
@@ -83,20 +84,30 @@ class ControlPanel(QWidget):
         ch_layout = QGridLayout()
         self.ch_checkboxes = []
         self.ch_scale_labels = []
+        self.ch_name_edits = []
         for i in range(NUM_CHANNELS):
-            checkbox = QCheckBox(f"CH {i + 1}", checked=True)
+            checkbox = QCheckBox(checked=True)
+            checkbox.setToolTip(f"Toggle visibility for Channel {i + 1}")
             checkbox.stateChanged.connect(lambda state, ch=i: self.channel_visibility_changed.emit(ch, bool(state)))
+            # edit channel name
+            name_edit = QLineEdit(f"CH {i + 1}")
+            name_edit.editingFinished.connect(partial(self._on_name_changed, i))
+
             scale_lbl = QLabel(f"Scale: {int(self.y_scales[i])}µV")
             zoom_in = QPushButton("+")
             zoom_out = QPushButton("-")
             zoom_in.clicked.connect(partial(self.adjust_scale, i, 0.8))
             zoom_out.clicked.connect(partial(self.adjust_scale, i, 1.25))
+
             ch_layout.addWidget(checkbox, i, 0)
-            ch_layout.addWidget(scale_lbl, i, 1)
-            ch_layout.addWidget(zoom_out, i, 2)
-            ch_layout.addWidget(zoom_in, i, 3)
+            ch_layout.addWidget(name_edit, i, 1)  # QLineEdit 占据2列
+            ch_layout.addWidget(scale_lbl, i, 2)
+            ch_layout.addWidget(zoom_out, i, 3)
+            ch_layout.addWidget(zoom_in, i, 4)
+
             self.ch_checkboxes.append(checkbox)
             self.ch_scale_labels.append(scale_lbl)
+            self.ch_name_edits.append(name_edit)
         ch_group.setLayout(ch_layout)
 
         #
@@ -248,3 +259,13 @@ class ControlPanel(QWidget):
             self.y_scales[channel] = new_scale
             self.ch_scale_labels[channel].setText(f"Scale: {int(new_scale)}µV")
             self.channel_scale_changed.emit(channel, new_scale)
+
+    def _on_name_changed(self, channel_index):
+        """当一个通道名称 QLineEdit 完成编辑时调用"""
+        new_name = self.ch_name_edits[channel_index].text()
+        self.channel_name_changed.emit(channel_index, new_name)
+        print(f"Channel {channel_index + 1} name changed to: {new_name}")
+
+    def get_channel_names(self):
+        """一个公共方法，返回所有通道当前名称的列表"""
+        return [edit.text() for edit in self.ch_name_edits]

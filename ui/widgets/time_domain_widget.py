@@ -220,6 +220,42 @@ class TimeDomainWidget(pg.GraphicsLayoutWidget):
         for i in range(NUM_CHANNELS): self.data_buffers[i].extend(data_chunk[i])
         self._redraw_all_channels()
 
+    # @pyqtSlot(np.ndarray)
+    # def update_plot(self, data_chunk):
+    #     """接收新的数据块并更新图表"""
+    #     num_samples = data_chunk.shape[1]
+    #     for i in range(NUM_CHANNELS):
+    #         # 将新数据块添加到对应通道的 deque 缓冲区的右侧
+    #         # deque 会自动从左侧丢弃旧数据，非常高效
+    #         self.data_buffers[i].extend(data_chunk[i])
+    #
+    #         # 更新曲线数据
+    #         time_axis = np.linspace(-self.plot_duration_samples / self.sampling_rate, 0, self.plot_duration_samples)
+    #         self.curves[i].setData(time_axis, np.array(self.data_buffers[i]))
+
+    @pyqtSlot(int, str)
+    def update_channel_name(self, channel, new_name):
+        """
+        更新两种视图模式下对应通道的名称。
+        """
+        # 安全检查，确保 channel 索引有效
+        if 0 <= channel < NUM_CHANNELS:
+
+            # --- 核心修复：操作正确的、用户可见的UI组件 ---
+
+            # 1. 更新“独立视图”(Individual View)中对应图表的Y轴标签
+            #    self.individual_plots 是在 _create_individual_view 中创建的图表列表
+            if hasattr(self, 'individual_plots') and channel < len(self.individual_plots):
+                axis = self.individual_plots[channel].getAxis('left')
+                axis.setLabel(new_name, units='µV')
+
+            # 2. 更新“堆叠视图”(Stacked View)中对应通道的文本标签
+            #    self.stacked_labels 是在 _create_stacked_view 中创建的 TextItem 列表
+            if hasattr(self, 'stacked_labels') and channel < len(self.stacked_labels):
+                self.stacked_labels[channel].setText(new_name)
+
+            print(f"TimeDomainWidget: Updated channel {channel} name to '{new_name}' in both views.")
+
     @pyqtSlot(int)
     def set_plot_duration(self, seconds):
         if self.is_review_mode: return
@@ -277,7 +313,7 @@ class TimeDomainWidget(pg.GraphicsLayoutWidget):
             if line.scene(): line.scene().removeItem(line)
         self.temp_marker_lines.clear()
 
-    def display_static_data(self, data, sampling_rate, markers=None):
+    def display_static_data(self, data, sampling_rate, markers=None, channel_names=None):
         self.is_review_mode = True
         self.clear_plots(for_static=True)
         num_samples = data.shape[1]
@@ -297,6 +333,9 @@ class TimeDomainWidget(pg.GraphicsLayoutWidget):
             offset = (NUM_CHANNELS - 1 - i) * CHANNEL_HEIGHT
             label.setPos(-0.05 * duration, offset)
         self._redraw_all_channels()
+        if channel_names:
+            for i, name in enumerate(channel_names):
+                self.update_channel_name(i, name)
         if markers is not None and 'timestamps' in markers and len(markers['timestamps']) > 0:
             timestamps, labels = markers['timestamps'], markers['labels']
             pen = pg.mkPen('r', style=pg.QtCore.Qt.PenStyle.DashLine, width=1)
