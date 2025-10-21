@@ -3,8 +3,8 @@ import pyqtgraph as pg
 import numpy as np
 import collections
 from pyqtgraph.Qt import QtWidgets
-from PyQt6.QtCore import QTimer, pyqtSlot
-from PyQt6.QtWidgets import QWidget, QVBoxLayout, QPushButton, QStackedLayout
+from PyQt6.QtCore import QTimer, pyqtSlot, pyqtSignal
+from PyQt6.QtWidgets import QWidget, QVBoxLayout, QPushButton, QStackedLayout, QHBoxLayout
 from enum import Enum
 from functools import partial
 
@@ -31,7 +31,8 @@ PLOT_COLORS = [
 
 CHANNEL_HEIGHT = 1.0
 
-class TimeDomainWidget(pg.GraphicsLayoutWidget):
+class TimeDomainWidget(QWidget):
+    start_guided_acquisition_clicked = pyqtSignal()
     def __init__(self, parent=None):
         super().__init__(parent)
 
@@ -42,7 +43,7 @@ class TimeDomainWidget(pg.GraphicsLayoutWidget):
         self.current_mode = PlotMode.STACKED
         self.plot_seconds = 5
         self.sampling_rate = 1000  # 默认值
-        self.plot_window_samples = int(self.sampling_rate / DOWNSAMPLE_FACTOR * self.plot_seconds)
+        self.plot_window_samples = int(self.sampling_rate * self.plot_seconds)
         self.individual_scales = [200.0] * NUM_CHANNELS
         self.stacked_view_scale = 200.0
         self._is_updating_stacked_range = False
@@ -57,20 +58,35 @@ class TimeDomainWidget(pg.GraphicsLayoutWidget):
         main_layout.setContentsMargins(0, 0, 0, 0)
         main_layout.setSpacing(5)
 
+        button_bar_layout = QHBoxLayout()
+
+        # EOG采集引导
+        self.start_acq_btn = QPushButton("EOG Acquisition Guide")
+        self.start_acq_btn.setFixedWidth(200)
+        self.start_acq_btn.clicked.connect(self.start_guided_acquisition_clicked.emit)
+
+        # 切换视图
         self.switch_button = QPushButton("Switch to Individual View")
         self.switch_button.setFixedWidth(180)
         self.switch_button.clicked.connect(self._toggle_plot_mode)
-        main_layout.addWidget(self.switch_button)
 
-        self.stacked_layout = QStackedLayout()
+        button_bar_layout.addStretch()
+        button_bar_layout.addWidget(self.start_acq_btn)
+        button_bar_layout.addWidget(self.switch_button)
+        main_layout.addLayout(button_bar_layout)
+
+        self.plot_stack = pg.QtWidgets.QStackedWidget()
+        main_layout.addWidget(self.plot_stack)
+
+        #self.stacked_layout = QStackedLayout()
 
         # --- 创建两个独立的 GraphicsLayoutWidget 实例 ---
         self.stacked_view = self._create_stacked_view()
         self.individual_view = self._create_individual_view()
 
-        self.stacked_layout.addWidget(self.stacked_view)
-        self.stacked_layout.addWidget(self.individual_view)
-        main_layout.addLayout(self.stacked_layout)
+        self.plot_stack.addWidget(self.stacked_view)
+        self.plot_stack.addWidget(self.individual_view)
+        #main_layout.addLayout(self.stacked_layout)
 
         self._set_plot_mode(self.current_mode)
 
@@ -159,10 +175,10 @@ class TimeDomainWidget(pg.GraphicsLayoutWidget):
 
         self.current_mode = mode
         if mode == PlotMode.STACKED:
-            self.stacked_layout.setCurrentWidget(self.stacked_view)
+            self.plot_stack.setCurrentWidget(self.stacked_view)
             self.switch_button.setText("Switch to Individual View")
         else:
-            self.stacked_layout.setCurrentWidget(self.individual_view)
+            self.plot_stack.setCurrentWidget(self.individual_view)
             self.switch_button.setText("Switch to Stacked View")
 
         # 切换后，立即使用【正确的数据源】重绘

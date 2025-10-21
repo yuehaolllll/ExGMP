@@ -23,6 +23,8 @@ from .widgets.settings_panel import SettingsPanel
 from .widgets.connection_panel import ConnectionPanel
 from .widgets.splash_widget import SplashWidget
 from networking.serial_receiver import SerialDataReceiver
+from processing.acquisition_controller import AcquisitionController
+from ui.widgets.guidance_overlay import GuidanceOverlay
 
 class FileSaver(QObject):
     finished = pyqtSignal(str) # Signal to report status back
@@ -131,6 +133,10 @@ class MainWindow(QMainWindow):
         self.receiver_thread = None
         self.receiver_instance = None
         self.setup_threads()
+
+        # 创建采集控制器实例
+        self.acquisition_controller = AcquisitionController()
+
         self.setup_connections()
 
         self.is_shutting_down = False
@@ -286,6 +292,22 @@ class MainWindow(QMainWindow):
         self.control_panel.channel_name_changed.connect(self.time_domain_widget.update_channel_name)
         self.control_panel.channel_name_changed.connect(self.freq_domain_widget.update_channel_name)
         self.control_panel.channel_name_changed.connect(self.data_processor.update_single_channel_name)
+
+        # 1. 将 TimeDomainWidget 上的 "开始" 按钮连接到 AcquisitionController 的 start 方法
+        self.time_domain_widget.start_guided_acquisition_clicked.connect(self.acquisition_controller.start)
+
+        # 2. 将 AcquisitionController 的状态更新信号连接到 GuidanceOverlay 的显示槽
+        #self.acquisition_controller.update_state.connect(self.guidance_overlay.update_display)
+
+        # 3. 将 AcquisitionController 的开始/结束信号连接到UI的更新方法
+        self.acquisition_controller.started.connect(self._on_acquisition_started)
+        self.acquisition_controller.finished.connect(self._on_acquisition_finished)
+
+        # 4. 将 AcquisitionController 的录制指令信号，连接到 DataProcessor 对应的槽
+        #    注意：因为 DataProcessor 在后台线程，这些连接会自动排队，非常安全
+        self.acquisition_controller.start_recording_signal.connect(self.data_processor.start_recording)
+        self.acquisition_controller.stop_recording_signal.connect(self.data_processor.stop_recording)
+        self.acquisition_controller.add_marker_signal.connect(self.data_processor.add_marker)
 
     @pyqtSlot(str, dict)  # 明确指定接收的参数类型
     def on_connect_clicked(self, conn_type, params):
@@ -519,6 +541,61 @@ class MainWindow(QMainWindow):
 
         # 3. 现在，命令 DataProcessor 开始录制
         self.data_processor.start_recording()
+
+    # def _on_acquisition_started(self):
+    #     """当引导式采集开始时，动态创建并显示覆盖层"""
+    #     print("UI notified: Acquisition has started.")
+    #
+    #     # --- 核心修复 2：动态创建 Overlay ---
+    #     # 1. 将父控件设置为 centralWidget (self.stacked_widget)
+    #     self.guidance_overlay = GuidanceOverlay(parent=self.centralWidget())
+    #
+    #     # 2. 将来自 Controller 的信号连接到这个新创建的 overlay
+    #     self.acquisition_controller.update_state.connect(self.guidance_overlay.update_display)
+    #
+    #     # 3. 显示覆盖层
+    #     self.guidance_overlay.show_overlay()
+    #
+    #     # --- 禁用按钮的逻辑保持不变 ---
+    #     self.control_panel.start_rec_btn.setEnabled(False)
+    #     self.control_panel.stop_rec_btn.setEnabled(False)
+    #     self.time_domain_widget.start_acq_btn.setEnabled(False)
+
+    def _on_acquisition_started(self):
+        """当引导式采集开始时，动态创建并显示覆盖层"""
+        print("UI notified: Acquisition has started.")
+
+        # --- 核心修复：创建时不再指定父控件 (parent=None) ---
+        self.guidance_overlay = GuidanceOverlay(parent=None)
+
+        self.guidance_overlay.exit_clicked.connect(self.acquisition_controller.stop)
+
+        self.acquisition_controller.update_state.connect(self.guidance_overlay.update_display)
+        self.guidance_overlay.show_overlay()
+
+        self.control_panel.start_rec_btn.setEnabled(False)
+        self.control_panel.stop_rec_btn.setEnabled(False)
+        self.time_domain_widget.start_acq_btn.setEnabled(False)
+
+    def _on_acquisition_finished(self):
+        """当引导式采集结束时，销毁覆盖层并恢复UI"""
+        print("UI notified: Acquisition has finished.")
+
+        # --- 核心修复 3：安全地销毁 Overlay ---
+        if hasattr(self, 'guidance_overlay') and self.guidance_overlay:
+            # 断开所有连接，防止内存泄漏
+            try:
+                self.acquisition_controller.update_state.disconnect(self.guidance_overlay.update_display)
+            except TypeError:
+                pass  # 信号可能已经断开
+
+            self.guidance_overlay.hide_overlay()
+            self.guidance_overlay.deleteLater()  # 安全地删除对象
+            self.guidance_overlay = None
+
+        # --- 恢复按钮状态的逻辑保持不变 ---
+        self.time_domain_widget.start_acq_btn.setEnabled(True)
+        self.update_ui_on_connection(self.is_session_running)
 
     def closeEvent(self, event):
         """
