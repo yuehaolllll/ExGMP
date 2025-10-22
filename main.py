@@ -3,6 +3,20 @@ import sys
 from PyQt6.QtWidgets import QApplication
 from ui.main_window import MainWindow
 
+import sys
+import os
+import resources_rc
+
+def resource_path(relative_path):
+    """ Get absolute path to resource, works for dev and for PyInstaller """
+    try:
+        # PyInstaller creates a temp folder and stores path in _MEIPASS
+        base_path = sys._MEIPASS
+    except Exception:
+        base_path = os.path.abspath(".")
+
+    return os.path.join(base_path, relative_path)
+
 QSS_STYLE = """
 /* Global settings - Clean and Professional Light Theme */
 QWidget {
@@ -147,7 +161,7 @@ QMenu::item:selected { /* 当鼠标悬停在下拉菜单的某个动作上时 */
 /* 为可勾选的菜单项添加一个“勾”的图标 */
 QMenu::indicator:checked {
     /* 这里你可以放置一个 check.svg 图标 */
-    /* image: url(icons/check.svg); */
+    /* image: url(:/icons/check.svg); */
     background-color: #E0E0E0;
     height: 12px;
     width: 12px;
@@ -189,13 +203,13 @@ QSpinBox::down-button:hover, QDoubleSpinBox::down-button:hover {
 
 /* 定义上下箭头的图标 */
 QSpinBox::up-arrow, QDoubleSpinBox::up-arrow {
-    image: url(icons/plus.svg);
+    image: url(:/icons/plus.svg);
     width: 14px;
     height: 14px;
 }
 
 QSpinBox::down-arrow, QDoubleSpinBox::down-arrow {
-    image: url(icons/minus.svg);
+    image: url(:/icons/minus.svg);
     width: 14px;
     height: 14px;
 }

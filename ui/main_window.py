@@ -7,6 +7,7 @@ import pyqtgraph as pg
 from scipy.io import savemat, loadmat
 import numpy as np
 import os
+import sys
 
 # 导入所有模块
 from networking.data_receiver import DataReceiver
@@ -17,14 +18,21 @@ from ui.widgets.frequency_domain_widget import FrequencyDomainWidget
 from .widgets.review_dialog import ReviewDialog
 from networking.data_receiver import HOST, PORT
 from .widgets.band_power_widget import BandPowerWidget
-from .widgets.refined_ble_scan_dialog import RefinedBleScanDialog
 from networking.bluetooth_receiver import BluetoothDataReceiver
 from .widgets.settings_panel import SettingsPanel
 from .widgets.connection_panel import ConnectionPanel
-from .widgets.splash_widget import SplashWidget
 from networking.serial_receiver import SerialDataReceiver
-from processing.acquisition_controller import AcquisitionController
 from ui.widgets.guidance_overlay import GuidanceOverlay
+
+def resource_path(relative_path):
+    """ Get absolute path to resource, works for dev and for PyInstaller """
+    try:
+        # PyInstaller creates a temp folder and stores path in _MEIPASS
+        base_path = sys._MEIPASS
+    except Exception:
+        base_path = os.path.abspath(".")
+
+    return os.path.join(base_path, relative_path)
 
 class FileSaver(QObject):
     finished = pyqtSignal(str) # Signal to report status back
@@ -105,8 +113,17 @@ class MainWindow(QMainWindow):
     frames_per_packet_changed = pyqtSignal(int)
     def __init__(self):
         super().__init__()
+
+
+        from .widgets.refined_ble_scan_dialog import RefinedBleScanDialog
+
+        from .widgets.splash_widget import SplashWidget
+
+        from processing.acquisition_controller import AcquisitionController
+
+
         # Logo
-        app_icon = QIcon("icons/logo.png")
+        app_icon = QIcon(resource_path("icons/logo.png"))
         self.setWindowIcon(app_icon)
         self.setWindowTitle("ExGMP")
         pg.setConfigOption('background', '#FFFFFF')
@@ -115,7 +132,7 @@ class MainWindow(QMainWindow):
         self.setCentralWidget(self.stacked_widget)  # 将堆叠窗口设为中心控件
 
         # --- 页面1: 启动动画 Widget ---
-        self.splash_widget = SplashWidget("icons/splash_animation.gif")
+        self.splash_widget = SplashWidget(resource_path("icons/splash_animation.gif"))
         self.stacked_widget.addWidget(self.splash_widget)
 
         # --- 页面2: 主交互界面 Widget ---
@@ -617,7 +634,7 @@ class MainWindow(QMainWindow):
         about_dialog.setWindowTitle("About ExGMP")
 
         # 设置左侧的Logo图标 (QPixmap用于显示图片)
-        logo_pixmap = QPixmap("icons/logo.png")
+        logo_pixmap = QPixmap(resource_path("icons/logo.png"))
         # 将其缩放到合适的大小，例如 64x64，并保持宽高比
         scaled_logo = logo_pixmap.scaled(64, 64, Qt.AspectRatioMode.KeepAspectRatio,
                                          Qt.TransformationMode.SmoothTransformation)

@@ -1,0 +1,10 @@
+<!DOCTYPE RCC>
+<RCC version="1.0">
+<qresource prefix="/">
+    <file>icons/plus.svg</file>
+    <file>icons/minus.svg</file>
+    <file>icons/logo.png</file>
+    <file>icons/logo.ico</file>
+    <file>icons/splash_animation.gif</file>
+</qresource>
+</RCC>

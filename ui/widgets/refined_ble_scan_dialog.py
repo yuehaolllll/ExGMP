@@ -5,7 +5,8 @@ from PyQt6.QtCore import pyqtSignal, QThread, QObject, Qt
 from PyQt6.QtGui import QIcon, QMovie
 import asyncio
 from bleak import BleakScanner
-
+from ui.widgets.guidance_overlay import GuidanceOverlay
+from main import resource_path
 
 # --- 复用 BleScannerWorker ---
 # （这段代码与旧的 ble_scan_dialog.py 中的完全相同）
@@ -40,8 +41,8 @@ class RefinedBleScanDialog(QDialog):
         self.setFixedSize(450, 350)
 
         # --- 图标和动画 ---
-        self.bt_icon = QIcon("icons/bluetooth.svg")
-        self.spinner_movie = QMovie("icons/spinner.gif")
+        self.bt_icon = QIcon(resource_path("icons/bluetooth.svg"))
+        self.spinner_movie = QMovie(resource_path("icons/spinner.gif"))
 
         # --- 主布局 ---
         main_layout = QVBoxLayout(self)
