@@ -5,7 +5,6 @@ from PyQt6.QtCore import pyqtSignal, QThread, QObject, Qt
 from PyQt6.QtGui import QIcon, QMovie
 import asyncio
 from bleak import BleakScanner
-from ui.widgets.guidance_overlay import GuidanceOverlay
 from main import resource_path
 
 # --- 复用 BleScannerWorker ---

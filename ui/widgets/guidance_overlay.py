@@ -46,21 +46,24 @@ class GuidanceOverlay(QWidget):
         # 3. 创建并添加中间内容布局
         content_layout = QVBoxLayout()
         self.instruction_label = QLabel()
-        font = QFont();
-        font.setPointSize(200);
-        font.setBold(True)
-        self.instruction_label.setFont(font)
         self.instruction_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.instruction_label.setStyleSheet(
-            "color: white; background-color: transparent; text-shadow: 5px 5px 10px black;")
+        self.instruction_label.setStyleSheet("""
+                    color: white; 
+                    background-color: transparent; 
+                    text-shadow: 5px 5px 10px black;
+                    font-size: 50px; 
+                    font-weight: bold;
+                """)
         self.instruction_label.setWordWrap(True)
 
+        # 2. 设置副提示语 (不再使用 QFont 和 setFont)
         self.sub_label = QLabel()
-        font.setPointSize(100);
-        font.setBold(False)
-        self.sub_label.setFont(font)
         self.sub_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.sub_label.setStyleSheet("color: #DDDDDD; background-color: transparent;")
+        self.sub_label.setStyleSheet("""
+                    color: #DDDDDD; 
+                    background-color: transparent;
+                    font-size: 30px;
+                """)
         self.sub_label.setWordWrap(True)
 
         content_layout.addStretch()
@@ -105,8 +108,8 @@ class GuidanceOverlay(QWidget):
             self.sub_label.setText("Get Ready...")
         elif state == AcquisitionState.RECORDING:
             action_text = str(data).replace('_', ' ').title()
-            if str(data) == 'BLINK':
-                self.instruction_label.setText("Blink Normally")
+            if 'BLINK' in str(data):
+                self.instruction_label.setText(action_text)
             else:
                 self.sub_label.setText(action_text)
             self._start_stimulus_animation(str(data))

@@ -2,6 +2,7 @@ import time
 from PyQt6.QtCore import QObject, pyqtSignal, QTimer, QSequentialAnimationGroup, QPropertyAnimation, QPoint, \
     QEasingCurve
 from enum import Enum, auto
+import random
 
 
 class AcquisitionState(Enum):
@@ -15,17 +16,20 @@ class AcquisitionState(Enum):
 # 动作序列
 ACTION_SEQUENCE = [
     'FIXATION',
-    'UP', 'BLINK',
-    'DOWN', 'BLINK',
-    'LEFT', 'BLINK',
-    'RIGHT', 'BLINK'
+    'UP', 'BLINK_ONCE',
+    'DOWN', 'BLINK_TWICE',
+    'LEFT', 'BLINK_ONCE',
+    'RIGHT', 'BLINK_THREE'
 ]
 # 每个阶段的持续时间（毫秒）
 INSTRUCTION_DURATION = 1000
 COUNTDOWN_DURATION = 1000
-RECORDING_DURATION = 3000
-REST_DURATION = 3000
+RECORDING_DURATION = 1500
+REST_DURATION = 2000
 
+PRIMARY_ACTIONS = ['FIXATION', 'UP', 'DOWN', 'LEFT', 'RIGHT', 'BLINK_TWICE', 'BLINK_THREE']
+INTERLEAVED_ACTION = 'BLINK_ONCE'
+TOTAL_TRIALS = 30
 
 class AcquisitionController(QObject):
     # --- 信号：发给UI和DataProcessor的指令 ---
@@ -41,9 +45,33 @@ class AcquisitionController(QObject):
 
     def __init__(self):
         super().__init__()
-        self.current_action_index = -1
+        self.current_trial_index  = -1
         self.is_running = False
         self.active_timers = []
+        self.trial_list = []
+
+    def _generate_trial_list(self):
+        """生成一个完整的、随机化的试验列表"""
+        self.trial_list = []
+
+        # 1. 创建一个随机化的主要动作列表
+        random_actions = []
+        # 为了凑够总次数，我们可能需要重复几次基本动作集
+        while len(random_actions) < TOTAL_TRIALS:
+            shuffled_actions = PRIMARY_ACTIONS.copy()
+            random.shuffle(shuffled_actions)
+            random_actions.extend(shuffled_actions)
+
+        # 截取到我们需要的总次数
+        random_actions = random_actions[:TOTAL_TRIALS]
+
+        # 2. 在每个主要动作后插入一个“眨眼一次”的动作
+        for action in random_actions:
+            self.trial_list.append(action)
+            self.trial_list.append(INTERLEAVED_ACTION)
+
+        print(f"Generated a new trial list with {len(self.trial_list)} total steps.")
+        # print(self.trial_list) # 取消注释可以查看完整的随机序列
 
     def start(self):
         """开始完整的引导式采集流程"""
@@ -53,7 +81,8 @@ class AcquisitionController(QObject):
 
         print("Starting guided acquisition...")
         self.is_running = True
-        self.current_action_index = -1
+        self._generate_trial_list()
+        self.current_trial_index  = -1
 
         # 发送信号，通知UI采集已开始
         self.started.emit()
@@ -95,10 +124,10 @@ class AcquisitionController(QObject):
         if not self.is_running:
             return
 
-        self.current_action_index += 1
+        self.current_trial_index  += 1
 
         # 检查是否所有动作都已完成
-        if self.current_action_index >= len(ACTION_SEQUENCE):
+        if self.current_trial_index  >= len(self.trial_list):
             self._finish_acquisition()
             return
 
@@ -106,12 +135,16 @@ class AcquisitionController(QObject):
         self._show_instruction()
 
     def _show_instruction(self):
-        action = ACTION_SEQUENCE[self.current_action_index]
+        action = self.trial_list[self.current_trial_index]
         instruction_text = action.replace('_', ' ').title()
         if action == 'FIXATION':
             instruction_text = "Calibration: Please Look Straight Ahead"
-        elif action == 'BLINK':
-            instruction_text = "Please Blink Normally"
+        elif action == 'BLINK_ONCE':
+            instruction_text = "Please Blink Once"
+        elif action == 'BLINK_TWICE':
+            instruction_text = "Please Blink Twice"
+        elif action == 'BLINK_THREE':
+            instruction_text = "Please Blink Three Times"
         else:
             instruction_text = f"Look {instruction_text}"
 
@@ -132,7 +165,7 @@ class AcquisitionController(QObject):
             self._start_recording_trial()
 
     def _start_recording_trial(self):
-        action = ACTION_SEQUENCE[self.current_action_index]
+        action = self.trial_list[self.current_trial_index]
         self.update_state.emit(AcquisitionState.RECORDING, action)
 
         # 在每个10秒试验的开始和结束点添加精确的标记
