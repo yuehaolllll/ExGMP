@@ -23,6 +23,7 @@ from .widgets.settings_panel import SettingsPanel
 from .widgets.connection_panel import ConnectionPanel
 from networking.serial_receiver import SerialDataReceiver
 from ui.widgets.guidance_overlay import GuidanceOverlay
+from .widgets.tools_panel import ToolsPanel
 
 def resource_path(relative_path):
     """ Get absolute path to resource, works for dev and for PyInstaller """
@@ -121,7 +122,7 @@ class MainWindow(QMainWindow):
 
         from processing.acquisition_controller import AcquisitionController
 
-
+        self.setMinimumSize(1100, 750)
         # Logo
         app_icon = QIcon(resource_path("icons/logo.png"))
         self.setWindowIcon(app_icon)
@@ -186,13 +187,33 @@ class MainWindow(QMainWindow):
         """
         一个由 main.py 调用的新方法，用于显示窗口并开始启动流程。
         """
-        # 1. 设置您想要的窗口尺寸和位置
-        self.resize(1200, 900)
-        screen_geometry = QGuiApplication.primaryScreen().availableGeometry()
-        window_geometry = self.frameGeometry()
-        center_point = screen_geometry.center()
-        window_geometry.moveCenter(center_point)
-        self.move(window_geometry.topLeft())
+
+        # 1. 获取可用的屏幕尺寸
+        available_geometry = QGuiApplication.primaryScreen().availableGeometry()
+        screen_width = available_geometry.width()
+        screen_height = available_geometry.height()
+
+        # 2. 找到屏幕宽度和高度中较小的一边
+        shorter_side = min(screen_width, screen_height)
+
+        # 3. 基于较小的一边，计算一个合适的“类正方形”尺寸
+        # 我们可以让宽度稍微大一些，例如 宽高比为 4:3 或 5:4
+        scale_factor = 0.9  # 使用屏幕较小边的 90%，您可以调整这个比例
+        window_height = int(shorter_side * scale_factor)
+        window_width = int(window_height * (4 / 3))  # 设置宽高比为 4:3
+
+        # 4. 确保计算出的尺寸不小于我们设定的最小尺寸
+        min_w, min_h = self.minimumSize().width(), self.minimumSize().height()
+        final_width = max(window_width, min_w)
+        final_height = max(window_height, min_h)
+
+        self.resize(final_width, final_height)
+
+        # 3. 将窗口移动到屏幕中央
+        # 这个方法比之前的 frameGeometry() 更简洁可靠
+        window_center_point = available_geometry.center()
+        self.move(int(window_center_point.x() - self.width() / 2),
+                  int(window_center_point.y() - self.height() / 2))
 
         # 2. 显示窗口
         self.show()
@@ -247,6 +268,12 @@ class MainWindow(QMainWindow):
         # 注意：这里的信号是 self.settings_panel 发出的，而不是旧的 QActionGroup
         self.settings_panel.sample_rate_changed.connect(self._on_sample_rate_changed)
         self.settings_panel.frames_per_packet_changed.connect(self._on_frames_changed)
+
+        tools_menu = menu_bar.addMenu("Tools")
+        self.tools_panel = ToolsPanel(self)
+        tools_widget_action = QWidgetAction(self)
+        tools_widget_action.setDefaultWidget(self.tools_panel)
+        tools_menu.addAction(tools_widget_action)
 
         help_menu = menu_bar.addMenu("Help")
         about_action = QAction("About ExGMP", self)
@@ -310,18 +337,10 @@ class MainWindow(QMainWindow):
         self.control_panel.channel_name_changed.connect(self.freq_domain_widget.update_channel_name)
         self.control_panel.channel_name_changed.connect(self.data_processor.update_single_channel_name)
 
-        # 1. 将 TimeDomainWidget 上的 "开始" 按钮连接到 AcquisitionController 的 start 方法
-        self.time_domain_widget.start_guided_acquisition_clicked.connect(self.acquisition_controller.start)
+        self.tools_panel.eog_acquisition_triggered.connect(self.acquisition_controller.start)
 
-        # 2. 将 AcquisitionController 的状态更新信号连接到 GuidanceOverlay 的显示槽
-        #self.acquisition_controller.update_state.connect(self.guidance_overlay.update_display)
-
-        # 3. 将 AcquisitionController 的开始/结束信号连接到UI的更新方法
         self.acquisition_controller.started.connect(self._on_acquisition_started)
         self.acquisition_controller.finished.connect(self._on_acquisition_finished)
-
-        # 4. 将 AcquisitionController 的录制指令信号，连接到 DataProcessor 对应的槽
-        #    注意：因为 DataProcessor 在后台线程，这些连接会自动排队，非常安全
         self.acquisition_controller.start_recording_signal.connect(self.data_processor.start_recording)
         self.acquisition_controller.stop_recording_signal.connect(self.data_processor.stop_recording)
         self.acquisition_controller.add_marker_signal.connect(self.data_processor.add_marker)
@@ -501,6 +520,7 @@ class MainWindow(QMainWindow):
     def update_ui_on_connection(self, is_connected):
         self.is_session_running = is_connected
         self.connection_panel.update_status(is_connected)
+        self.tools_panel.update_status(is_connected)
         self.control_panel.start_rec_btn.setEnabled(is_connected)
         if not is_connected:
             self.control_panel.stop_rec_btn.setEnabled(False)
@@ -559,25 +579,6 @@ class MainWindow(QMainWindow):
         # 3. 现在，命令 DataProcessor 开始录制
         self.data_processor.start_recording()
 
-    # def _on_acquisition_started(self):
-    #     """当引导式采集开始时，动态创建并显示覆盖层"""
-    #     print("UI notified: Acquisition has started.")
-    #
-    #     # --- 核心修复 2：动态创建 Overlay ---
-    #     # 1. 将父控件设置为 centralWidget (self.stacked_widget)
-    #     self.guidance_overlay = GuidanceOverlay(parent=self.centralWidget())
-    #
-    #     # 2. 将来自 Controller 的信号连接到这个新创建的 overlay
-    #     self.acquisition_controller.update_state.connect(self.guidance_overlay.update_display)
-    #
-    #     # 3. 显示覆盖层
-    #     self.guidance_overlay.show_overlay()
-    #
-    #     # --- 禁用按钮的逻辑保持不变 ---
-    #     self.control_panel.start_rec_btn.setEnabled(False)
-    #     self.control_panel.stop_rec_btn.setEnabled(False)
-    #     self.time_domain_widget.start_acq_btn.setEnabled(False)
-
     def _on_acquisition_started(self):
         """当引导式采集开始时，动态创建并显示覆盖层"""
         print("UI notified: Acquisition has started.")
@@ -592,7 +593,7 @@ class MainWindow(QMainWindow):
 
         self.control_panel.start_rec_btn.setEnabled(False)
         self.control_panel.stop_rec_btn.setEnabled(False)
-        self.time_domain_widget.start_acq_btn.setEnabled(False)
+        #self.time_domain_widget.start_acq_btn.setEnabled(False)
 
     def _on_acquisition_finished(self):
         """当引导式采集结束时，销毁覆盖层并恢复UI"""
@@ -611,7 +612,7 @@ class MainWindow(QMainWindow):
             self.guidance_overlay = None
 
         # --- 恢复按钮状态的逻辑保持不变 ---
-        self.time_domain_widget.start_acq_btn.setEnabled(True)
+        #self.time_domain_widget.start_acq_btn.setEnabled(True)
         self.update_ui_on_connection(self.is_session_running)
 
     def closeEvent(self, event):

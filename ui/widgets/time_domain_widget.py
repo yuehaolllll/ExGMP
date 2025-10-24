@@ -32,7 +32,6 @@ PLOT_COLORS = [
 CHANNEL_HEIGHT = 1.0
 
 class TimeDomainWidget(QWidget):
-    start_guided_acquisition_clicked = pyqtSignal()
     def __init__(self, parent=None):
         super().__init__(parent)
 
@@ -60,25 +59,17 @@ class TimeDomainWidget(QWidget):
 
         button_bar_layout = QHBoxLayout()
 
-        # EOG采集引导
-        self.start_acq_btn = QPushButton("EOG Acquisition Guide")
-        self.start_acq_btn.setFixedWidth(200)
-        self.start_acq_btn.clicked.connect(self.start_guided_acquisition_clicked.emit)
-
         # 切换视图
         self.switch_button = QPushButton("Switch to Individual View")
         self.switch_button.setFixedWidth(180)
         self.switch_button.clicked.connect(self._toggle_plot_mode)
 
         button_bar_layout.addStretch()
-        button_bar_layout.addWidget(self.start_acq_btn)
         button_bar_layout.addWidget(self.switch_button)
         main_layout.addLayout(button_bar_layout)
 
         self.plot_stack = pg.QtWidgets.QStackedWidget()
         main_layout.addWidget(self.plot_stack)
-
-        #self.stacked_layout = QStackedLayout()
 
         # --- 创建两个独立的 GraphicsLayoutWidget 实例 ---
         self.stacked_view = self._create_stacked_view()
@@ -86,7 +77,6 @@ class TimeDomainWidget(QWidget):
 
         self.plot_stack.addWidget(self.stacked_view)
         self.plot_stack.addWidget(self.individual_view)
-        #main_layout.addLayout(self.stacked_layout)
 
         self._set_plot_mode(self.current_mode)
 
@@ -184,19 +174,6 @@ class TimeDomainWidget(QWidget):
         # 切换后，立即使用【正确的数据源】重绘
         self._redraw_all_channels()
 
-    # def _set_plot_mode(self, mode):
-    #     if mode == PlotMode.STACKED and self.current_mode == PlotMode.INDIVIDUAL:
-    #         self.stacked_view_scale = self.individual_scales[0]
-    #         self._update_stacked_y_range()
-    #     self.current_mode = mode
-    #     if mode == PlotMode.STACKED:
-    #         self.stacked_layout.setCurrentWidget(self.stacked_view)
-    #         self.switch_button.setText("Switch to Individual View")
-    #     else:
-    #         self.stacked_layout.setCurrentWidget(self.individual_view)
-    #         self.switch_button.setText("Switch to Stacked View")
-    #     if self.is_review_mode: self._redraw_all_channels()
-
     def _redraw_all_channels(self):
         if self.current_mode == PlotMode.STACKED: self._redraw_stacked()
         else: self._redraw_individual()
@@ -235,19 +212,6 @@ class TimeDomainWidget(QWidget):
         if self.is_review_mode: return # 回顾模式下忽略新的实时数据
         for i in range(NUM_CHANNELS): self.data_buffers[i].extend(data_chunk[i])
         self._redraw_all_channels()
-
-    # @pyqtSlot(np.ndarray)
-    # def update_plot(self, data_chunk):
-    #     """接收新的数据块并更新图表"""
-    #     num_samples = data_chunk.shape[1]
-    #     for i in range(NUM_CHANNELS):
-    #         # 将新数据块添加到对应通道的 deque 缓冲区的右侧
-    #         # deque 会自动从左侧丢弃旧数据，非常高效
-    #         self.data_buffers[i].extend(data_chunk[i])
-    #
-    #         # 更新曲线数据
-    #         time_axis = np.linspace(-self.plot_duration_samples / self.sampling_rate, 0, self.plot_duration_samples)
-    #         self.curves[i].setData(time_axis, np.array(self.data_buffers[i]))
 
     @pyqtSlot(int, str)
     def update_channel_name(self, channel, new_name):
