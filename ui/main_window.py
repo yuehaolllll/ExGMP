@@ -24,6 +24,8 @@ from .widgets.connection_panel import ConnectionPanel
 from networking.serial_receiver import SerialDataReceiver
 from ui.widgets.guidance_overlay import GuidanceOverlay
 from .widgets.tools_panel import ToolsPanel
+from processing.eog_model_controller import ModelController
+from ui.widgets.eye_typing_widget import EyeTypingWidget
 
 def resource_path(relative_path):
     """ Get absolute path to resource, works for dev and for PyInstaller """
@@ -112,14 +114,13 @@ class FileLoader(QObject):
 class MainWindow(QMainWindow):
     sample_rate_changed = pyqtSignal(int)
     frames_per_packet_changed = pyqtSignal(int)
+
     def __init__(self):
         super().__init__()
 
-
+        # These local imports are fine here
         from .widgets.refined_ble_scan_dialog import RefinedBleScanDialog
-
         from .widgets.splash_widget import SplashWidget
-
         from processing.acquisition_controller import AcquisitionController
 
         self.setMinimumSize(1100, 750)
@@ -130,34 +131,46 @@ class MainWindow(QMainWindow):
         pg.setConfigOption('background', '#FFFFFF')
         pg.setConfigOption('foreground', '#333333')
         self.stacked_widget = QStackedWidget()
-        self.setCentralWidget(self.stacked_widget)  # 将堆叠窗口设为中心控件
+        self.setCentralWidget(self.stacked_widget)
 
-        # --- 页面1: 启动动画 Widget ---
+        # --- Splash Screen Page ---
         self.splash_widget = SplashWidget(resource_path("icons/splash_animation.gif"))
         self.stacked_widget.addWidget(self.splash_widget)
 
-        # --- 页面2: 主交互界面 Widget ---
-        # 1. 创建一个容器 QWidget 用于主界面
+        # --- Main UI Page ---
         main_ui_widget = QWidget()
-        # 2. 将您原来的所有UI组件放入这个容器中
         self._setup_main_ui(main_ui_widget)
-        # 3. 将这个完整的容器添加到堆叠窗口
         self.stacked_widget.addWidget(main_ui_widget)
 
+        # --- Initialize Dialogs and State Variables ---
         self.ble_scan_dialog = RefinedBleScanDialog(self)
-
         self.review_dialog = None
+        self.eye_typing_dialog = None
         self.is_session_running = False
         self.receiver_thread = None
         self.receiver_instance = None
-        self.setup_threads()
+        self.is_shutting_down = False
 
-        # 创建采集控制器实例
+        # --- CORRECTED LOGIC ORDER ---
+
+        # 1. Instantiate ALL controllers and move them to threads FIRST
+        self.setup_threads()  # This sets up the data_processor in its thread
+
+        # Instantiate EyeTyper and ModelController
+        self.eog_model_controller_thread = QThread()
+        self.eog_model_controller = ModelController()
+        self.eog_model_controller.moveToThread(self.eog_model_controller_thread)
+
+        # Instantiate the AcquisitionController
         self.acquisition_controller = AcquisitionController()
 
+        # 2. Now that all objects exist, connect their signals and slots ONCE
         self.setup_connections()
 
-        self.is_shutting_down = False
+        # 3. Start the persistent background threads
+        self.eog_model_controller_thread.start()
+
+        self.update_ui_on_connection(False)
 
     def _setup_main_ui(self, parent_widget):
         """
@@ -275,6 +288,12 @@ class MainWindow(QMainWindow):
         tools_widget_action.setDefaultWidget(self.tools_panel)
         tools_menu.addAction(tools_widget_action)
 
+        app_menu = menu_bar.addMenu("Application")
+        self.eye_typing_action = QAction("Eye Typing", self)
+        self.eye_typing_action.setEnabled(False)  # Disabled until connected
+        self.eye_typing_action.triggered.connect(self._launch_eye_typer)
+        app_menu.addAction(self.eye_typing_action)
+
         help_menu = menu_bar.addMenu("Help")
         about_action = QAction("About ExGMP", self)
         about_action.triggered.connect(self.show_about_dialog)
@@ -344,6 +363,7 @@ class MainWindow(QMainWindow):
         self.acquisition_controller.start_recording_signal.connect(self.data_processor.start_recording)
         self.acquisition_controller.stop_recording_signal.connect(self.data_processor.stop_recording)
         self.acquisition_controller.add_marker_signal.connect(self.data_processor.add_marker)
+        self.data_processor.filtered_data_ready.connect(self.eog_model_controller.process_data_chunk)
 
     @pyqtSlot(str, dict)  # 明确指定接收的参数类型
     def on_connect_clicked(self, conn_type, params):
@@ -521,6 +541,7 @@ class MainWindow(QMainWindow):
         self.is_session_running = is_connected
         self.connection_panel.update_status(is_connected)
         self.tools_panel.update_status(is_connected)
+        self.eye_typing_action.setEnabled(is_connected)
         self.control_panel.start_rec_btn.setEnabled(is_connected)
         if not is_connected:
             self.control_panel.stop_rec_btn.setEnabled(False)
@@ -622,6 +643,11 @@ class MainWindow(QMainWindow):
         """
         self.is_shutting_down = True
         print("Close event triggered.")
+
+        # Stop the model controller thread
+        self.eog_model_controller_thread.quit()
+        self.eog_model_controller_thread.wait()
+
         # 1. 调用 stop_session 并传入 blocking=True
         self.stop_session(blocking=True)
 
@@ -652,3 +678,29 @@ class MainWindow(QMainWindow):
         )
 
         about_dialog.exec()
+
+    def _launch_eye_typer(self):
+        """Creates, connects, and launches the eye typing dialog."""
+        # Create a new instance each time to ensure a clean state
+        self.eye_typing_dialog = EyeTypingWidget(self)
+
+        # Connect the model's prediction signal to the dialog's input slot
+        self.eog_model_controller.prediction_ready.connect(self.eye_typing_dialog.on_prediction_received)
+
+        # Tell the model controller to start predicting
+        self.eog_model_controller.set_active(True)
+
+        # Show the dialog. The 'exec()' call will block until it's closed.
+        self.eye_typing_dialog.exec()
+
+        # --- Cleanup after the dialog is closed ---
+        print("Eye typing dialog closed. Cleaning up.")
+
+        # Tell the model controller to stop predicting to save resources
+        self.eog_model_controller.set_active(False)
+
+        # Disconnect the signal to prevent closed widgets from receiving signals
+        try:
+            self.eog_model_controller.prediction_ready.disconnect(self.eye_typing_dialog.on_prediction_received)
+        except TypeError:
+            pass  # Ignore error if it's already disconnected

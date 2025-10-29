@@ -25,6 +25,8 @@ class DataProcessor(QObject):
     marker_added_live = pyqtSignal()
     band_power_ready = pyqtSignal(np.ndarray)
 
+    filtered_data_ready = pyqtSignal(np.ndarray)
+
     def __init__(self):
         super().__init__()
         self.raw_data_buffer = collections.deque()
@@ -103,6 +105,8 @@ class DataProcessor(QObject):
                                                             zi=self.filter_zi)
         else:
             filtered_chunk = notched_chunk
+
+        self.filtered_data_ready.emit(filtered_chunk)
 
         # --- 关键修复 2：现在我们保存【滤波后】的数据 ---
         if self.is_recording:

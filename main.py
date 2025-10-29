@@ -7,6 +7,16 @@ import sys
 import os
 import resources_rc
 
+try:
+    if 'CONDA_PREFIX' in os.environ:
+        conda_prefix = os.environ['CONDA_PREFIX']
+        os.add_dll_directory(os.path.join(conda_prefix, 'Library', 'bin'))
+    if hasattr(sys, '_MEIPASS'):
+        os.add_dll_directory(sys._MEIPASS)
+    os.environ['KMP_DUPLICATE_LIB_OK'] = 'TRUE'
+except Exception:
+    pass
+
 def resource_path(relative_path):
     """ Get absolute path to resource, works for dev and for PyInstaller """
     try:
