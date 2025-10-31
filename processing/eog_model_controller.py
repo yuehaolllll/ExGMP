@@ -11,7 +11,7 @@ import time
 from .rsca_model import RSCA_Net
 
 # --- 常量 ---
-MODEL_PATH = "./models/rsca_model.pth"
+MODEL_PATH = "./models/rsca_net_8class_1.pth"
 CLASS_LABELS = ['up', 'down', 'left', 'right', 'blink_once', 'blink_twice', 'blink_three', 'fixation']
 CONFIDENCE_THRESHOLD = 0.75
 COOLDOWN_PERIOD = 0.7  # 冷却时间可以稍微延长一点
