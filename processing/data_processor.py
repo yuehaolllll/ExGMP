@@ -50,6 +50,10 @@ class DataProcessor(QObject):
         self.update_notch_filter(False, 50.0)
         self.channel_names = [f'CH {i + 1}' for i in range(NUM_CHANNELS)]
 
+        self.calibration_timer = QTimer()
+        self.calibration_timer.setSingleShot(True)  # 设置为单次触发
+        self.calibration_timer.timeout.connect(self.finish_ica_calibration)  # 时间到后直接调用结束方法
+
         # --- 用于 ICA 校准的状态变量 ---
         self.is_calibrating_ica = False
         self.ica_calibration_buffer = []
@@ -122,9 +126,9 @@ class DataProcessor(QObject):
 
         if self.is_calibrating_ica:
             self.ica_calibration_buffer.append(filtered_chunk)
-            # 检查是否已达到校准时长
-            if time.time() - self.calibration_start_time >= self.calibration_duration:
-                self.finish_ica_calibration()
+            # # 检查是否已达到校准时长
+            # if time.time() - self.calibration_start_time >= self.calibration_duration:
+            #     self.finish_ica_calibration()
 
         if self.ica_enabled and self.ica_model is not None:
             # 我们将在后面的步骤中实现这个方法
@@ -154,24 +158,30 @@ class DataProcessor(QObject):
             return  # 避免重复启动
 
         print(f"Starting ICA calibration for {duration_seconds} seconds.")
-        self.calibration_duration = duration_seconds
+        #self.calibration_duration = duration_seconds
         self.ica_calibration_buffer = []
         self.is_calibrating_ica = True
-        self.calibration_start_time = time.time()
+        #self.calibration_start_time = time.time()
+        self.calibration_timer.start(duration_seconds * 1000)
 
     def finish_ica_calibration(self):
-        print("Finished collecting ICA calibration data.")
+        # 这个方法现在由定时器精确调用，其内部逻辑是正确的，无需修改
+        if not self.is_calibrating_ica:
+            # 防止因意外情况（如快速连续点击）导致重复调用
+            return
+
+        print("Finished collecting ICA calibration data via QTimer.")
         self.is_calibrating_ica = False
 
         if not self.ica_calibration_buffer:
             print("Warning: No data collected for ICA calibration.")
+            # 即使没有数据，也需要通知UI训练失败或结束
+            # 这里可以根据需要发出一个失败信号
             return
 
-        # 将所有数据块连接成一个大的 numpy 数组
         full_calibration_data = np.concatenate(self.ica_calibration_buffer, axis=1)
-        self.ica_calibration_buffer = []  # 清空缓冲区
+        self.ica_calibration_buffer = []
 
-        # 发出信号，将数据传递给主线程进行处理
         self.calibration_data_ready.emit(full_calibration_data)
 
     def apply_ica_cleaning(self, data_chunk):
@@ -332,4 +342,14 @@ class DataProcessor(QObject):
     def stop(self):
         if self.processing_timer: self.processing_timer.stop()
         if self.fft_timer: self.fft_timer.stop()
+
+        # --- 额外加固：确保在停止会话时，校准定时器也被停止 ---
+        if self.calibration_timer.isActive():
+            self.calibration_timer.stop()
+            # 如果是在校准中途停止的，需要重置状态
+            if self.is_calibrating_ica:
+                self.is_calibrating_ica = False
+                self.ica_calibration_buffer = []
+                print("ICA calibration was cancelled due to session stop.")
+
         if self.is_recording: self.stop_recording()
