@@ -4,7 +4,7 @@ import numpy as np
 import collections
 from pyqtgraph.Qt import QtWidgets
 from PyQt6.QtCore import QTimer, pyqtSlot, pyqtSignal
-from PyQt6.QtWidgets import QWidget, QVBoxLayout, QPushButton, QStackedLayout, QHBoxLayout
+from PyQt6.QtWidgets import QWidget, QVBoxLayout, QPushButton, QStackedLayout, QHBoxLayout, QGridLayout
 from enum import Enum
 from functools import partial
 
@@ -78,6 +78,7 @@ class TimeDomainWidget(QWidget):
         self.plot_stack.addWidget(self.stacked_view)
         self.plot_stack.addWidget(self.individual_view)
 
+        self._update_individual_view_layout()
         self._set_plot_mode(self.current_mode)
 
     @pyqtSlot(int)
@@ -113,58 +114,71 @@ class TimeDomainWidget(QWidget):
 
     def _create_individual_view(self):
         view = pg.GraphicsLayoutWidget()
-        view.ci.layout.setSpacing(0)
-        self.individual_plots, self.individual_curves = [], []
+        view.ci.layout.setSpacing(2)
 
-        # Link all X axes together
+        self.individual_plots = []
+        self.individual_curves = []
+
+        # Create all 8 PlotItems once and store them
         for i in range(NUM_CHANNELS):
-            p = view.addPlot(row=i, col=0)
-            if self.individual_plots:  # Link to the previous plot's X axis
-                p.setXLink(self.individual_plots[0])
-
-            p.setDownsampling(mode='peak')
+            p = pg.PlotItem()
+            p.setDownsampling(mode='peak');
             p.setClipToView(True)
-            p.setLabel('left', f"CH {i + 1}", units='µV', color=PLOT_COLORS[i])
-
-            # --- THE FIX ---
-            # Hide the X axis for all plots except the last one
-            if i < NUM_CHANNELS - 1:
-                p.hideAxis('bottom')
-            else:
-                # Only the last plot shows the shared X axis label
-                p.setLabel('bottom', 'Time', units='s')
-
-            p.showGrid(x=True, y=True, alpha=0.4)
+            #p.getAxis('bottom').setPen(pg.mkPen(color='#DCDCDC', width=1))
+            p.showGrid(x=True, y=True, alpha=0.3)
             p.setYRange(-self.individual_scales[i], self.individual_scales[i])
-            p.getViewBox().setMouseEnabled(y=True)
+            p.getViewBox().setMouseEnabled(x=True, y=True)  # Enable mouse for both axes
             p.getViewBox().sigYRangeChanged.connect(partial(self._on_individual_y_range_changed, i))
 
             curve = p.plot(pen=pg.mkPen(color=PLOT_COLORS[i], width=1.5))
+
             self.individual_plots.append(p)
             self.individual_curves.append(curve)
 
         return view
-    # def _create_individual_view(self):
-    #     view = pg.GraphicsLayoutWidget()
-    #     view.ci.layout.setSpacing(0)
-    #     self.individual_plots, self.individual_curves = [], []
-    #     for i in range(NUM_CHANNELS):
-    #         p = view.addPlot(row=i, col=0)
-    #
-    #         p.setDownsampling(mode='peak')
-    #         p.setClipToView(True)
-    #
-    #         p.setYLink(None)
-    #         p.setLabel('left', f"CH {i+1}", units='µV', color=PLOT_COLORS[i])
-    #         p.setLabel('bottom', 'Time', units='s')
-    #         p.showGrid(x=True, y=True, alpha=0.4)
-    #         p.setYRange(-self.individual_scales[i], self.individual_scales[i])
-    #         p.getViewBox().setMouseEnabled(y=True)
-    #         p.getViewBox().sigYRangeChanged.connect(partial(self._on_individual_y_range_changed, i))
-    #         curve = p.plot(pen=pg.mkPen(color=PLOT_COLORS[i], width=1.5))
-    #         self.individual_plots.append(p)
-    #         self.individual_curves.append(curve)
-    #     return view
+
+    def toggle_visibility(self, channel, visible):
+        # Stacked View logic (correct)
+        if 0 <= channel < len(self.stacked_curves):
+            self.stacked_curves[channel].setVisible(visible)
+            self.stacked_labels[channel].setVisible(visible)
+
+        # Individual View: Hide/Show the PlotItem and trigger a full layout rebuild
+        if 0 <= channel < len(self.individual_plots):
+            self.individual_plots[channel].setVisible(visible)
+            self._update_individual_view_layout()
+
+    def _update_individual_view_layout(self):
+        """Dynamically rebuilds the layout for a clean, correct, and independent view."""
+        layout = self.individual_view.ci
+        layout.clear()
+
+        visible_plots = [p for p in self.individual_plots if p.isVisible()]
+
+        for i, plot in enumerate(visible_plots):
+            channel_index = self.individual_plots.index(plot)
+
+            # --- 核心修改部分 ---
+            # 1. 强制解除任何现有的轴联动，确保每个图表的X轴和Y轴都是独立的
+            plot.setXLink(None)
+            plot.setYLink(None)
+
+            # 2. 重新应用Y轴标签，防止它在布局重建时丢失
+            plot.setLabel('left', f"CH {channel_index + 1}", units='µV', color=PLOT_COLORS[channel_index])
+
+            # 3. (修改点) 无条件地为每一个可见的图表显示其独立的X轴
+            plot.showAxis('bottom')
+            plot.setLabel('bottom', 'Time', units='s')
+
+            # --- 原来的条件隐藏逻辑已被上面两行代码替代 ---
+            # if i < len(visible_plots) - 1:
+            #     plot.hideAxis('bottom')
+            # else:
+            #     plot.showAxis('bottom')
+            #     plot.setLabel('bottom', 'Time', units='s')
+
+            # 4. 将配置好的图表添加到布局的下一行
+            layout.addItem(plot, row=i, col=0)
 
     def _update_stacked_y_range(self):
         """根据当前的 stacked_view_scale 来更新Y轴的可见范围"""
@@ -189,8 +203,12 @@ class TimeDomainWidget(QWidget):
         self._is_updating_stacked_range = False
 
     def _on_individual_y_range_changed(self, channel_index):
-        y_range = self.individual_plots[channel_index].getViewBox().viewRange()[1]
-        self.individual_scales[channel_index] = (y_range[1] - y_range[0]) / 2
+        plot_item = self.individual_plots[channel_index]
+        # Check if the axis is part of a scene; a robust way to check if it's "alive"
+        if plot_item.getAxis('left').scene() is not None:
+            y_range = plot_item.getViewBox().viewRange()[1]
+            new_scale = (y_range[1] - y_range[0]) / 2
+            self.individual_scales[channel_index] = new_scale
 
     def _toggle_plot_mode(self):
         if self.current_mode == PlotMode.STACKED:
@@ -237,22 +255,6 @@ class TimeDomainWidget(QWidget):
             offset = (NUM_CHANNELS - 1 - i) * CHANNEL_HEIGHT
             scaled_data = (data_source[i] / scale * CHANNEL_HEIGHT / 2) + offset
             self.stacked_curves[i].setData(x=time_vector, y=scaled_data)
-    # def _redraw_stacked(self):
-    #     if self.is_review_mode:
-    #         if self.static_data is None: return
-    #         data_source = self.static_data
-    #         time_vector = self.static_time_vector
-    #     else:
-    #         current_samples = len(self.data_buffers[0])
-    #         if current_samples == 0: return
-    #         data_source = [np.array(buf) for buf in self.data_buffers]
-    #         time_vector = np.linspace(0, self.plot_seconds * (current_samples / self.plot_window_samples), current_samples)
-    #     scale = self.stacked_view_scale
-    #     if abs(scale) < 1e-9: scale = 1e-9
-    #     for i in range(NUM_CHANNELS):
-    #         offset = (NUM_CHANNELS - 1 - i) * CHANNEL_HEIGHT
-    #         scaled_data = (data_source[i] / scale * CHANNEL_HEIGHT / 2) + offset
-    #         self.stacked_curves[i].setData(x=time_vector, y=scaled_data)
 
     def _redraw_individual(self):
         if self.is_review_mode:
@@ -268,18 +270,6 @@ class TimeDomainWidget(QWidget):
 
         for i in range(NUM_CHANNELS):
             self.individual_curves[i].setData(x=time_vector, y=data_source[i])
-    # def _redraw_individual(self):
-    #     if self.is_review_mode:
-    #         if self.static_data is None: return
-    #         data_source = self.static_data
-    #         time_vector = self.static_time_vector
-    #     else:
-    #         current_samples = len(self.data_buffers[0])
-    #         if current_samples == 0: return
-    #         data_source = [np.array(buf) for buf in self.data_buffers]
-    #         time_vector = np.linspace(0, self.plot_seconds * (current_samples / self.plot_window_samples), current_samples)
-    #     for i in range(NUM_CHANNELS):
-    #         self.individual_curves[i].setData(x=time_vector, y=data_source[i])
 
     def update_plot(self, data_chunk):
         if self.is_review_mode: return # 回顾模式下忽略新的实时数据
@@ -334,39 +324,17 @@ class TimeDomainWidget(QWidget):
             self.data_buffers[i] = new_buffer
 
         self._redraw_all_channels()
-    # @pyqtSlot(int)
-    # def set_plot_duration(self, seconds):
-    #     if self.is_review_mode: return
-    #     self.plot_seconds, self.plot_window_samples = seconds, int(self.sampling_rate / DOWNSAMPLE_FACTOR * seconds)
-    #     for p in self.individual_plots: p.setXRange(0, self.plot_seconds)
-    #     self.stacked_plot.setXRange(0, self.plot_seconds)
-    #     for i, label in enumerate(self.stacked_labels):
-    #         offset = (NUM_CHANNELS - 1 - i) * CHANNEL_HEIGHT
-    #         label.setPos(-0.05 * self.plot_seconds, offset)
-    #     for i in range(NUM_CHANNELS):
-    #         current_data = list(self.data_buffers[i]);
-    #         new_buffer = collections.deque(maxlen=self.plot_window_samples)
-    #         new_buffer.extend(current_data);
-    #         self.data_buffers[i] = new_buffer
-    #     self._redraw_all_channels()
 
     @pyqtSlot(int, float)
-    def adjust_scale(self, channel, scale):
-        if self.current_mode == PlotMode.INDIVIDUAL:
-            self.individual_scales[channel] = scale
-            self.individual_plots[channel].setYRange(-scale, scale)
-        elif self.current_mode == PlotMode.STACKED:
-            self.stacked_view_scale = scale
-            self._update_stacked_y_range()
-            if not self.is_review_mode: self._redraw_stacked()
-
-    def toggle_visibility(self, channel, visible):
-        # 在独立视图下，我们隐藏整个 PlotItem
-        self.individual_plots[channel].setVisible(visible)
-
-        # 在堆叠视图下，我们只隐藏曲线和标签
-        self.stacked_curves[channel].setVisible(visible)
-        self.stacked_labels[channel].setVisible(visible)
+    def adjust_scale(self, channel, new_scale):
+        if 0 <= channel < NUM_CHANNELS:
+            self.individual_scales[channel] = new_scale
+            if self.current_mode == PlotMode.INDIVIDUAL:
+                self.individual_plots[channel].setYRange(-new_scale, new_scale)
+            elif self.current_mode == PlotMode.STACKED:
+                self.stacked_view_scale = new_scale
+                self._update_stacked_y_range()
+                self._redraw_stacked()
 
     @pyqtSlot()
     def show_live_marker(self):

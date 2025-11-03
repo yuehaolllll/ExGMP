@@ -254,11 +254,21 @@ class ControlPanel(QWidget):
         self.last_stat_time = current_time
 
     def adjust_scale(self, channel, factor):
+        # Calculate the absolute new scale value
         new_scale = self.y_scales[channel] * factor
+
+        # Check bounds
         if 1 < new_scale < 5000:
             self.y_scales[channel] = new_scale
             self.ch_scale_labels[channel].setText(f"Scale: {int(new_scale)}µV")
+            # Emit the absolute new scale value
             self.channel_scale_changed.emit(channel, new_scale)
+    # def adjust_scale(self, channel, factor):
+    #     new_scale = self.y_scales[channel] * factor
+    #     if 1 < new_scale < 5000:
+    #         self.y_scales[channel] = new_scale
+    #         self.ch_scale_labels[channel].setText(f"Scale: {int(new_scale)}µV")
+    #         self.channel_scale_changed.emit(channel, new_scale)
 
     def _on_name_changed(self, channel_index):
         """当一个通道名称 QLineEdit 完成编辑时调用"""
