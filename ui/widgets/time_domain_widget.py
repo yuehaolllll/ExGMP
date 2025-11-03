@@ -122,7 +122,7 @@ class TimeDomainWidget(QWidget):
         # Create all 8 PlotItems once and store them
         for i in range(NUM_CHANNELS):
             p = pg.PlotItem()
-            p.setDownsampling(mode='peak');
+            p.setDownsampling(mode='peak')
             p.setClipToView(True)
             #p.getAxis('bottom').setPen(pg.mkPen(color='#DCDCDC', width=1))
             p.showGrid(x=True, y=True, alpha=0.3)

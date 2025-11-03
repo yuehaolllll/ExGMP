@@ -2,6 +2,7 @@ import numpy as np
 import collections
 from PyQt6.QtCore import QObject, pyqtSignal, pyqtSlot, QTimer
 import scipy.signal as signal
+import time
 
 # --- 常量 ---
 #SAMPLING_RATE = 2000
@@ -27,6 +28,8 @@ class DataProcessor(QObject):
 
     filtered_data_ready = pyqtSignal(np.ndarray)
 
+    calibration_data_ready = pyqtSignal(np.ndarray)
+
     def __init__(self):
         super().__init__()
         self.raw_data_buffer = collections.deque()
@@ -46,6 +49,17 @@ class DataProcessor(QObject):
         self.notch_b, self.notch_a, self.notch_zi = None, None, None
         self.update_notch_filter(False, 50.0)
         self.channel_names = [f'CH {i + 1}' for i in range(NUM_CHANNELS)]
+
+        # --- 用于 ICA 校准的状态变量 ---
+        self.is_calibrating_ica = False
+        self.ica_calibration_buffer = []
+        self.calibration_start_time = 0
+        self.calibration_duration = 0
+
+        # --- 用于 ICA 应用的状态变量 ---
+        self.ica_model = None
+        self.ica_bad_indices = []
+        self.ica_enabled = False
 
     @pyqtSlot(list)
     def set_channel_names(self, names):
@@ -106,7 +120,19 @@ class DataProcessor(QObject):
         else:
             filtered_chunk = notched_chunk
 
-        self.filtered_data_ready.emit(filtered_chunk)
+        if self.is_calibrating_ica:
+            self.ica_calibration_buffer.append(filtered_chunk)
+            # 检查是否已达到校准时长
+            if time.time() - self.calibration_start_time >= self.calibration_duration:
+                self.finish_ica_calibration()
+
+        if self.ica_enabled and self.ica_model is not None:
+            # 我们将在后面的步骤中实现这个方法
+            final_chunk = self.apply_ica_cleaning(filtered_chunk)
+        else:
+            final_chunk = filtered_chunk  # 如果未启用，则直接使用滤波后的数据
+
+        self.filtered_data_ready.emit(final_chunk)
 
         # --- 关键修复 2：现在我们保存【滤波后】的数据 ---
         if self.is_recording:
@@ -122,7 +148,77 @@ class DataProcessor(QObject):
         #self.time_data_ready.emit(downsampled_data)
         self.time_data_ready.emit(filtered_chunk)
 
-    # --- (update_notch_filter, calculate_fft, start/stop_recording 保持不变) ---
+    @pyqtSlot(int)
+    def start_ica_calibration(self, duration_seconds):
+        if self.is_calibrating_ica:
+            return  # 避免重复启动
+
+        print(f"Starting ICA calibration for {duration_seconds} seconds.")
+        self.calibration_duration = duration_seconds
+        self.ica_calibration_buffer = []
+        self.is_calibrating_ica = True
+        self.calibration_start_time = time.time()
+
+    def finish_ica_calibration(self):
+        print("Finished collecting ICA calibration data.")
+        self.is_calibrating_ica = False
+
+        if not self.ica_calibration_buffer:
+            print("Warning: No data collected for ICA calibration.")
+            return
+
+        # 将所有数据块连接成一个大的 numpy 数组
+        full_calibration_data = np.concatenate(self.ica_calibration_buffer, axis=1)
+        self.ica_calibration_buffer = []  # 清空缓冲区
+
+        # 发出信号，将数据传递给主线程进行处理
+        self.calibration_data_ready.emit(full_calibration_data)
+
+    def apply_ica_cleaning(self, data_chunk):
+        """
+        使用已训练的ICA模型移除伪迹成分。
+        """
+        try:
+            # 1. 分解信号 -> 获取源信号
+            #    FastICA 模型需要 (n_samples, n_features) 格式，所以需要转置
+            sources = self.ica_model.transform(data_chunk.T)
+
+            # 2. 将标记为伪迹的成分置零
+            #    这是一个高效的 numpy 操作
+            if self.ica_bad_indices: # 只有在有坏道时才操作
+                sources[:, self.ica_bad_indices] = 0
+
+            # 3. 重建信号 -> 得到清洗后的数据
+            #    使用模型的 inverse_transform 方法
+            cleaned_data_transposed = self.ica_model.inverse_transform(sources)
+
+            # 4. 转置回原始格式 (n_channels, n_samples) 并返回
+            return cleaned_data_transposed.T
+
+        except Exception as e:
+            print(f"Error during ICA cleaning: {e}. Disabling ICA.")
+            # 发生错误时，自动禁用以防程序崩溃
+            self.ica_enabled = False
+            # 返回原始数据块
+            return data_chunk
+
+    @pyqtSlot(bool)
+    def toggle_ica(self, enabled):
+        if self.ica_model is None:
+            print("Cannot enable ICA: model not trained.")
+            self.ica_enabled = False
+            return
+
+        self.ica_enabled = enabled
+        status = "enabled" if enabled else "disabled"
+        print(f"Real-time ICA cleaning has been {status}.")
+
+    @pyqtSlot(object, list)
+    def set_ica_parameters(self, model, bad_indices):
+        print(f"DataProcessor received ICA model. Bad components: {bad_indices}")
+        self.ica_model = model
+        self.ica_bad_indices = bad_indices
+
     @pyqtSlot(bool, float)
     def update_notch_filter(self, enabled, freq):
         self.notch_enabled = enabled

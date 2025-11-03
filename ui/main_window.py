@@ -1,7 +1,7 @@
 # In ui/main_window.py
 from PyQt6.QtWidgets import (QMainWindow, QWidget, QHBoxLayout, QVBoxLayout, QFileDialog,
                              QSplitter, QDialog, QWidgetAction, QMessageBox, QStackedWidget)
-from PyQt6.QtCore import QThread, QObject, pyqtSignal, Qt, pyqtSlot, QTimer
+from PyQt6.QtCore import QThread, QObject, pyqtSignal, Qt, pyqtSlot, QTimer, QMetaObject, Q_ARG
 from PyQt6.QtGui import QAction, QActionGroup, QIcon, QPixmap, QGuiApplication
 import pyqtgraph as pg
 from scipy.io import savemat, loadmat
@@ -26,6 +26,8 @@ from ui.widgets.guidance_overlay import GuidanceOverlay
 from .widgets.tools_panel import ToolsPanel
 from processing.eog_model_controller import ModelController
 from ui.widgets.eye_typing_widget import EyeTypingWidget
+from processing.ica_processor import ICAProcessor
+from .widgets.ica_component_dialog import ICAComponentDialog
 
 def resource_path(relative_path):
     """ Get absolute path to resource, works for dev and for PyInstaller """
@@ -153,6 +155,11 @@ class MainWindow(QMainWindow):
 
         self.current_connection_message = "Disconnected"
         # --- CORRECTED LOGIC ORDER ---
+
+        self.ica_thread = QThread()
+        self.ica_processor = ICAProcessor()
+        self.ica_processor.moveToThread(self.ica_thread)
+        self.ica_thread.start()  # 启动线程的事件循环
 
         # 1. Instantiate ALL controllers and move them to threads FIRST
         self.setup_threads()  # This sets up the data_processor in its thread
@@ -358,6 +365,10 @@ class MainWindow(QMainWindow):
         self.control_panel.channel_name_changed.connect(self.data_processor.update_single_channel_name)
 
         self.tools_panel.eog_acquisition_triggered.connect(self.acquisition_controller.start)
+        self.tools_panel.ica_toggle_changed.connect(self.data_processor.toggle_ica)
+        self.data_processor.calibration_data_ready.connect(self._on_calibration_data_ready)
+        self.ica_processor.training_finished.connect(self._on_ica_training_finished)
+        self.ica_processor.training_failed.connect(self._on_ica_training_failed)
 
         self.acquisition_controller.started.connect(self._on_acquisition_started)
         self.acquisition_controller.finished.connect(self._on_acquisition_finished)
@@ -709,3 +720,60 @@ class MainWindow(QMainWindow):
             self.eog_model_controller.prediction_ready.disconnect(self.eye_typing_dialog.on_prediction_received)
         except TypeError:
             pass  # Ignore error if it's already disconnected
+
+    @pyqtSlot(np.ndarray)
+    def _on_calibration_data_ready(self, data):
+        """
+        当 DataProcessor 收集完校准数据后，此槽被调用。
+        它将触发后台 ICA 训练。
+        """
+        # 更新UI状态，告知用户训练已开始
+        self.tools_panel.ica_status_lbl.setText("Status: Training model...")
+
+        # 使用 QMetaObject.invokeMethod 安全地跨线程调用 train 方法
+        # 这会将数据传递给 ICAProcessor 并在其自己的线程中执行 train()
+        QMetaObject.invokeMethod(self.ica_processor, "train",
+                                 Qt.ConnectionType.QueuedConnection,
+                                 Q_ARG(np.ndarray, data))
+
+    @pyqtSlot(object, np.ndarray)
+    def _on_ica_training_finished(self, ica_model, components):
+        """
+        当后台 ICA 训练完成后，此槽被调用。
+        它将启动用户交互对话框。
+        """
+        print("MainWindow: Received trained ICA model. Launching selection dialog.")
+
+        # --- 2. 替换模拟代码为真实对话框逻辑 ---
+
+        # 创建并显示对话框
+        # 我们需要当前的采样率来正确显示时间轴
+        current_sample_rate = self.data_processor.sampling_rate
+        dialog = ICAComponentDialog(components, current_sample_rate, self)
+
+        # exec()会阻塞，直到用户关闭对话框
+        result = dialog.exec()
+
+        # 检查用户是否点击了 "OK"
+        if result == QDialog.DialogCode.Accepted:
+            # 获取用户选择的伪迹成分索引
+            bad_indices = dialog.get_selected_indices()
+            print(f"User selected components {bad_indices} as artifacts.")
+
+            # 将训练好的模型和用户选择的伪迹索引发送给 DataProcessor
+            self.data_processor.set_ica_parameters(ica_model, bad_indices)
+
+            # 更新 UI，告知用户校准已完成，可以启用功能了
+            self.tools_panel.set_calibration_finished()
+        else:
+            # 如果用户点击 "Cancel" 或关闭了窗口
+            print("User cancelled ICA component selection.")
+            # 重置UI状态，允许用户重新开始校准
+            self.tools_panel.update_status(self.is_session_running)
+
+    @pyqtSlot(str)
+    def _on_ica_training_failed(self, error_message):
+        """当 ICA 训练失败时，此槽被调用。"""
+        QMessageBox.critical(self, "ICA Training Error", error_message)
+        # 重置UI状态
+        self.tools_panel.update_status(self.is_session_running)
