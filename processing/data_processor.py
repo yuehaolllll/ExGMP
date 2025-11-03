@@ -1,6 +1,6 @@
 import numpy as np
 import collections
-from PyQt6.QtCore import QObject, pyqtSignal, pyqtSlot, QTimer
+from PyQt6.QtCore import QObject, pyqtSignal, pyqtSlot, QTimer, QThread
 import scipy.signal as signal
 import time
 
@@ -32,6 +32,7 @@ class DataProcessor(QObject):
 
     def __init__(self):
         super().__init__()
+        print(f"[DEBUG] DataProcessor __init__ on thread: {QThread.currentThreadId()}")
         self.raw_data_buffer = collections.deque()
         self.processing_timer = None
         self.sampling_rate = 1000  # 默认值
@@ -39,6 +40,7 @@ class DataProcessor(QObject):
         self.fft_data_buffer = collections.deque(maxlen=self.fft_samples)
         self.packet_counter = 0
         self.fft_timer = None
+        self.calibration_timer = None
         self.is_recording = False
         self.recording_buffer = []
         self.markers = {'timestamps': [], 'labels': []}
@@ -50,15 +52,9 @@ class DataProcessor(QObject):
         self.update_notch_filter(False, 50.0)
         self.channel_names = [f'CH {i + 1}' for i in range(NUM_CHANNELS)]
 
-        self.calibration_timer = QTimer()
-        self.calibration_timer.setSingleShot(True)  # 设置为单次触发
-        self.calibration_timer.timeout.connect(self.finish_ica_calibration)  # 时间到后直接调用结束方法
-
         # --- 用于 ICA 校准的状态变量 ---
         self.is_calibrating_ica = False
         self.ica_calibration_buffer = []
-        self.calibration_start_time = 0
-        self.calibration_duration = 0
 
         # --- 用于 ICA 应用的状态变量 ---
         self.ica_model = None
@@ -155,19 +151,23 @@ class DataProcessor(QObject):
     @pyqtSlot(int)
     def start_ica_calibration(self, duration_seconds):
         if self.is_calibrating_ica:
-            return  # 避免重复启动
+            return
 
-        print(f"Starting ICA calibration for {duration_seconds} seconds.")
-        #self.calibration_duration = duration_seconds
+        # 检查 calibration_timer 是否已正确创建
+        if self.calibration_timer is None:
+            print("[ERROR] start_ica_calibration called but timer is not initialized. Aborting.")
+            return
+
+        print(f"Starting ICA calibration for {duration_seconds} seconds on thread {QThread.currentThreadId()}.")
         self.ica_calibration_buffer = []
         self.is_calibrating_ica = True
-        #self.calibration_start_time = time.time()
         self.calibration_timer.start(duration_seconds * 1000)
 
     def finish_ica_calibration(self):
-        # 这个方法现在由定时器精确调用，其内部逻辑是正确的，无需修改
+        # 添加一个非常明显的打印语句，确认此方法是否被调用
+        print("\n\n>>> FINISH ICA CALIBRATION CALLED! <<<\n\n")
+
         if not self.is_calibrating_ica:
-            # 防止因意外情况（如快速连续点击）导致重复调用
             return
 
         print("Finished collecting ICA calibration data via QTimer.")
@@ -175,8 +175,7 @@ class DataProcessor(QObject):
 
         if not self.ica_calibration_buffer:
             print("Warning: No data collected for ICA calibration.")
-            # 即使没有数据，也需要通知UI训练失败或结束
-            # 这里可以根据需要发出一个失败信号
+            # TODO: Consider emitting a failure signal to reset the UI
             return
 
         full_calibration_data = np.concatenate(self.ica_calibration_buffer, axis=1)
@@ -321,35 +320,52 @@ class DataProcessor(QObject):
             print(f"Marker '{label}' added at sample {marker_timestamp}")
             self.marker_added_live.emit()
 
-    # --- (start 和 stop 方法保持不变) ---
+
     @pyqtSlot()
     def start(self):
+        """
+        这个方法在 DataProcessor 被移入新线程后才会被调用。
+        这是创建属于该线程的 QTimer 对象的完美时机。
+        """
+        print(f"DataProcessor.start() is running on thread: {QThread.currentThreadId()}")
+
+        # 1. 创建并配置所有定时器
+        if self.processing_timer is None:
+            self.processing_timer = QTimer(self)  # 将 self 作为父对象
+            self.processing_timer.setInterval(PROCESSING_INTERVAL_MS)
+            self.processing_timer.timeout.connect(self._process_buffered_data)
+
+        if self.fft_timer is None:
+            self.fft_timer = QTimer(self)  # 将 self 作为父对象
+            self.fft_timer.setInterval(int(1000 / FFT_UPDATE_RATE))
+            self.fft_timer.timeout.connect(self.calculate_fft)
+
+        if self.calibration_timer is None:
+            self.calibration_timer = QTimer(self)  # 将 self 作为父对象
+            self.calibration_timer.setSingleShot(True)
+            self.calibration_timer.timeout.connect(self.finish_ica_calibration)
+
+        # 2. 清空缓冲区并启动常规定时器
         self.raw_data_buffer.clear()
         self.fft_data_buffer.clear()
         self.packet_counter = 0
-        if self.processing_timer is None:
-            self.processing_timer = QTimer()
-            self.processing_timer.setInterval(PROCESSING_INTERVAL_MS)
-            self.processing_timer.timeout.connect(self._process_buffered_data)
         self.processing_timer.start()
-        if self.fft_timer is None:
-            self.fft_timer = QTimer()
-            self.fft_timer.setInterval(int(1000 / FFT_UPDATE_RATE))
-            self.fft_timer.timeout.connect(self.calculate_fft)
         self.fft_timer.start()
+        print("DataProcessor timers started successfully.")
 
     @pyqtSlot()
     def stop(self):
-        if self.processing_timer: self.processing_timer.stop()
-        if self.fft_timer: self.fft_timer.stop()
-
-        # --- 额外加固：确保在停止会话时，校准定时器也被停止 ---
-        if self.calibration_timer.isActive():
+        # 停止所有定时器
+        if self.processing_timer and self.processing_timer.isActive():
+            self.processing_timer.stop()
+        if self.fft_timer and self.fft_timer.isActive():
+            self.fft_timer.stop()
+        if self.calibration_timer and self.calibration_timer.isActive():
             self.calibration_timer.stop()
-            # 如果是在校准中途停止的，需要重置状态
             if self.is_calibrating_ica:
                 self.is_calibrating_ica = False
                 self.ica_calibration_buffer = []
-                print("ICA calibration was cancelled due to session stop.")
+                print("ICA calibration was cancelled.")
 
-        if self.is_recording: self.stop_recording()
+        if self.is_recording:
+            self.stop_recording()
