@@ -67,9 +67,9 @@ class ToolsPanel(QWidget):
         ica_layout.setSpacing(8)
 
         # 1. 开始校准按钮
-        self.calibrate_ica_btn = QPushButton("Start Calibration")
-        self.calibrate_ica_btn.setToolTip("Collect 30s of data to train the ICA model.")
-        self.calibrate_ica_btn.clicked.connect(self._on_start_calibration)
+        self.calibrate_ica_btn = QPushButton("Compute ICA")
+        self.calibrate_ica_btn.setToolTip("Run AMICA on recent data to find artifact components.")
+        self.calibrate_ica_btn.clicked.connect(self.ica_calibration_triggered.emit)
 
         # 2. 状态标签
         self.ica_status_lbl = QLabel("Status: Not Calibrated")
@@ -88,19 +88,16 @@ class ToolsPanel(QWidget):
         self.update_status(False)
 
     def _on_start_calibration(self):
-        # 这里可以设置校准时长，暂时硬编码为30秒
-        calibration_duration_seconds = 30
-        self.ica_calibration_triggered.emit(calibration_duration_seconds)
-
-        # 更新UI，防止重复点击
+        # 这个方法现在变得非常简单
+        self.ica_calibration_triggered.emit()  # <-- 直接发射无参数信号
         self.calibrate_ica_btn.setEnabled(False)
-        self.ica_status_lbl.setText("Status: Calibrating...")
+        self.ica_status_lbl.setText("Status: Computing ICA...")  # <-- 文本已更改
 
     def set_calibration_finished(self):
         """一个公开方法，当ICA模型训练完成后由外部调用"""
         self.ica_status_lbl.setText("Status: Ready to Enable")
-        self.calibrate_ica_btn.setEnabled(True)  # 允许重新校准
-        self.enable_ica_checkbox.setEnabled(True)  # 现在可以启用了
+        self.calibrate_ica_btn.setEnabled(True)
+        self.enable_ica_checkbox.setEnabled(True)
 
     def update_status(self, is_connected):
         """根据连接状态更新面板UI"""

@@ -119,6 +119,15 @@ class MainWindow(QMainWindow):
 
     def __init__(self):
         super().__init__()
+        amica_path = r'F:\ESP32\Prj\ExGMP\bin\amica15.exe'
+        # 检查路径是否存在
+        if not os.path.exists(amica_path):
+            print(f"\n\n[FATAL ERROR] AMICA executable not found at: {amica_path}")
+            print("Please correct the path in MainWindow.__init__\n\n")
+        else:
+            # 将路径设置到环境变量中，以便 MNE-Python 可以找到它
+            os.environ['AMICA_PATH'] = amica_path
+            print(f"AMICA path set to: {os.environ.get('AMICA_PATH')}")
 
         # These local imports are fine here
         from .widgets.refined_ble_scan_dialog import RefinedBleScanDialog
@@ -366,7 +375,8 @@ class MainWindow(QMainWindow):
 
         self.tools_panel.eog_acquisition_triggered.connect(self.acquisition_controller.start)
         self.tools_panel.ica_toggle_changed.connect(self.data_processor.toggle_ica)
-        self.tools_panel.ica_calibration_triggered.connect(self.data_processor.start_ica_calibration)
+        #self.tools_panel.ica_calibration_triggered.connect(self.data_processor.start_ica_calibration)
+        self.tools_panel.ica_calibration_triggered.connect(self.data_processor.trigger_ica_computation)
         self.data_processor.calibration_data_ready.connect(self._on_calibration_data_ready)
         self.ica_processor.training_finished.connect(self._on_ica_training_finished)
         self.ica_processor.training_failed.connect(self._on_ica_training_failed)
@@ -725,17 +735,21 @@ class MainWindow(QMainWindow):
     @pyqtSlot(np.ndarray)
     def _on_calibration_data_ready(self, data):
         """
-        当 DataProcessor 收集完校准数据后，此槽被调用。
-        它将触发后台 ICA 训练。
+        当 DataProcessor 发送来数据后，此槽被调用。
+        它将触发后台 AMICA 训练。
         """
-        # 更新UI状态，告知用户训练已开始
-        self.tools_panel.ica_status_lbl.setText("Status: Training model...")
+        self.tools_panel.ica_status_lbl.setText("Status: Computing ICA...")
 
-        # 使用 QMetaObject.invokeMethod 安全地跨线程调用 train 方法
-        # 这会将数据传递给 ICAProcessor 并在其自己的线程中执行 train()
+        # 获取训练所需的元数据
+        sampling_rate = self.data_processor.sampling_rate
+        channel_names = self.control_panel.get_channel_names()  # 从UI获取最新的通道名
+
+        # --- 3. 更新调用，传递新的元数据参数 ---
         QMetaObject.invokeMethod(self.ica_processor, "train",
                                  Qt.ConnectionType.QueuedConnection,
-                                 Q_ARG(np.ndarray, data))
+                                 Q_ARG(np.ndarray, data),
+                                 Q_ARG(int, sampling_rate),
+                                 Q_ARG(list, channel_names))
 
     @pyqtSlot(object, np.ndarray)
     def _on_ica_training_finished(self, ica_model, components):
