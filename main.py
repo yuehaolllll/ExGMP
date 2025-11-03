@@ -124,6 +124,12 @@ QMenu::item {
     padding: 5px 25px 5px 20px;
     border: 1px solid transparent;
 }
+
+QMenu::item:disabled {
+    color: #BDBDBD; /* Set the text color to light gray */
+    background: transparent; /* Ensure no background color */
+}
+
 QMenu::item:selected {
     background-color: #007BFF;
     color: #FFFFFF;

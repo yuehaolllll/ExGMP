@@ -151,6 +151,7 @@ class MainWindow(QMainWindow):
         self.receiver_instance = None
         self.is_shutting_down = False
 
+        self.current_connection_message = "Disconnected"
         # --- CORRECTED LOGIC ORDER ---
 
         # 1. Instantiate ALL controllers and move them to threads FIRST
@@ -410,13 +411,14 @@ class MainWindow(QMainWindow):
                 self.review_dialog = ReviewDialog(self)
             self.review_dialog.load_and_display(result)
 
-        # 无论加载成功与否，都要根据 self.is_session_running 恢复状态栏
-        if self.is_session_running:
-            # 如果会话仍在运行，则将状态恢复为 "Connected"
-            self.control_panel.update_status(f"Connected to {HOST}:{PORT}")
-        else:
-            # 否则，状态应为 "Disconnected"
-            self.control_panel.update_status("Disconnected")
+        # # 无论加载成功与否，都要根据 self.is_session_running 恢复状态栏
+        # if self.is_session_running:
+        #     # 如果会话仍在运行，则将状态恢复为 "Connected"
+        #     self.control_panel.update_status(f"Connected to {HOST}:{PORT}")
+        # else:
+        #     # 否则，状态应为 "Disconnected"
+        #     self.control_panel.update_status("Disconnected")
+        self.control_panel.update_status(self.current_connection_message)
 
         self.load_thread.quit()
 
@@ -521,6 +523,7 @@ class MainWindow(QMainWindow):
         self.receiver_thread = None
 
         # 在所有后台活动都已确认停止后，最后一次、安全地更新UI
+        self.current_connection_message = "Disconnected"
         self.update_ui_on_connection(False)
         self.control_panel.update_status("Disconnected")
 
@@ -530,8 +533,10 @@ class MainWindow(QMainWindow):
         is_disconnected = "Disconnected" in message or "已断开" in message or "连接错误" in message
         self.control_panel.update_status(message)
         if is_connected:
+            self.current_connection_message = message
             self.update_ui_on_connection(True)
         elif is_disconnected:
+            self.current_connection_message = "Disconnected"
             if self.is_session_running:
                 self.stop_session()
             else:
