@@ -2,15 +2,14 @@
 
 import numpy as np
 import os
+import subprocess
+import tempfile
 from PyQt6.QtCore import QObject, pyqtSignal, pyqtSlot
 
-# 尝试导入 MNE，如果失败则给出提示
+# 再次导入MNE，我们仍然需要它来处理数据
 try:
     import mne
-
-    print("MNE-Python library loaded successfully.")
 except ImportError:
-    print("Error: MNE-Python is not installed. Please install it using 'pip install mne'")
     mne = None
 
 
@@ -20,63 +19,107 @@ class ICAProcessor(QObject):
 
     @pyqtSlot(np.ndarray, int, list)
     def train(self, data_chunk, sampling_rate, channel_names):
-        """
-        使用 MNE-Python 和 AMICA 算法训练ICA模型。
-        这是一个槽函数，可以被主线程的信号调用。
-        """
-        if mne is None:
-            self.training_failed.emit("MNE-Python is not installed.")
-            return
-
-        # 检查 AMICA 可执行文件的路径是否已设置
         if 'AMICA_PATH' not in os.environ:
-            msg = "AMICA executable path not set. Please set it in MainWindow.__init__"
-            print(f"[ERROR] {msg}")
-            self.training_failed.emit(msg)
+            self.training_failed.emit("AMICA executable path not set.")
             return
 
-        # data_chunk 的形状是 (n_channels, n_samples)
-        print(f"ICAProcessor: Starting AMICA training on data with shape {data_chunk.shape}...")
+        amica_path = os.environ['AMICA_PATH']
+        n_channels, n_samples = data_chunk.shape
 
-        try:
-            # 1. 创建 MNE-Python 需要的 Info 对象 (元数据)
-            n_channels = len(channel_names)
-            info = mne.create_info(ch_names=channel_names, sfreq=sampling_rate, ch_types='eeg')
+        # 创建一个临时目录来存放AMICA的输入输出文件
+        with tempfile.TemporaryDirectory() as tmpdir:
+            print(f"Created temporary directory for AMICA: {tmpdir}")
 
-            # 2. 将 numpy 数组转换为 MNE 的 RawArray 对象
-            # 注意：MNE期望的单位是伏特(V)，而我们的数据是微伏(µV)，所以要除以1,000,000
-            raw = mne.io.RawArray(data_chunk / 1e6, info)
+            # 1. 准备AMICA的输入数据文件
+            # AMICA需要一个float32的二进制文件
+            input_data_path = os.path.join(tmpdir, 'eeg_data.fdt')
+            # 将我们的numpy数组以float32格式写入文件
+            data_chunk.astype(np.float32).tofile(input_data_path)
 
-            # 3. 初始化 ICA 对象，指定使用 AMICA 方法
-            #    fit_params 将被传递给 AMICA 可执行文件
-            #    我们采纳论文的建议：进行多次迭代以实现自动样本拒绝
-            ica = mne.preprocessing.ICA(
-                n_components=n_channels,
-                method='amica',
-                fit_params=dict(
-                    max_iter=2000,  # AMICA 总的最大迭代次数
-                    num_models=1,  # 通常使用1个模型
-                    auto_reject=True,  # 开启自动拒绝
-                    reject_around_mean=True,
-                    # 以下参数模拟了论文中 "5-10次迭代，3个标准差" 的建议
-                    num_rejects=10,  # 进行10轮样本拒绝
-                    reject_sigma=3  # 拒绝阈值为3个标准差
+            # 2. 构建命令行指令
+            # 这是最核心的部分，我们手动构建调用amica15.exe的命令
+            command = [
+                amica_path,
+                str(n_channels),  # num_chans
+                str(n_samples),  # num_frames
+                '1',  # num_models (we use 1)
+                str(n_samples),  # max_iter
+                '1',  # do_newton
+                '1.0',  # lrate
+                'outdir', tmpdir  # 指定输出目录
+            ]
+
+            print(f"\n--- Running AMICA Command ---")
+            print(" ".join(command))
+            print("-----------------------------\n")
+
+            try:
+                # 3. 执行AMICA程序
+                # 我们捕获它的所有输出，以便调试
+                process = subprocess.run(
+                    command,
+                    capture_output=True,
+                    text=True,
+                    check=True,  # 如果AMICA返回错误码，则抛出异常
+                    cwd=tmpdir  # 在临时目录中运行
                 )
-            )
 
-            # 4. 运行 ICA.fit()，这会调用 AMICA 可执行程序
-            ica.fit(raw)
+                # 打印AMICA的原始输出
+                print("\n--- AMICA Standard Output ---")
+                print(process.stdout)
+                print("-----------------------------\n")
+                if process.stderr:
+                    print("\n--- AMICA Standard Error ---")
+                    print(process.stderr)
+                    print("----------------------------\n")
 
-            # 5. 获取分解出的独立成分用于可视化
-            sources = ica.get_sources(raw)
-            components_for_viz = sources.get_data()
+                # 4. 如果成功，从AMICA的输出文件中加载结果
+                # AMICA会将解混矩阵保存为 'W.txt'
+                weights_path = os.path.join(tmpdir, 'W.txt')
+                unmixing_matrix = np.loadtxt(weights_path).astype(np.float64)
 
-            print("ICAProcessor: AMICA training finished successfully.")
+                # AMICA会将球化矩阵保存为 'S.txt'
+                sphere_path = os.path.join(tmpdir, 'S.txt')
+                sphering_matrix = np.loadtxt(sphere_path).astype(np.float64)
 
-            # 6. 发出完成信号，将模型(ica对象)和成分数据传递回主线程
-            self.training_finished.emit(ica, components_for_viz)
+                # 5. 将加载的结果手动应用到 MNE 的 ICA 对象中
+                # 这样我们仍然可以利用MNE的后续功能
+                info = mne.create_info(ch_names=channel_names, sfreq=sampling_rate, ch_types='eeg')
+                raw = mne.io.RawArray(data_chunk / 1e6, info)
 
-        except Exception as e:
-            error_message = f"An error occurred during AMICA training: {e}"
-            print(error_message)
-            self.training_failed.emit(error_message)
+                ica = mne.preprocessing.ICA(n_components=n_channels)
+
+                # 手动设置ICA对象的内部矩阵
+                ica.info = info
+                ica.ch_names = channel_names
+                ica.pre_whitener_ = sphering_matrix
+                ica.unmixing_matrix_ = unmixing_matrix @ np.linalg.pinv(sphering_matrix)
+                ica._update_mixing_matrix()
+                ica._update_ica_names()
+
+                # 获取成分用于可视化
+                sources = ica.get_sources(raw)
+                components_for_viz = sources.get_data()
+
+                print("ICAProcessor: AMICA training finished successfully (manual call).")
+                self.training_finished.emit(ica, components_for_viz)
+
+            except subprocess.CalledProcessError as e:
+                # 如果AMICA程序运行失败
+                error_msg = (
+                    f"AMICA executable failed with exit code {e.returncode}.\n\n"
+                    f"--- AMICA STDOUT ---\n{e.stdout}\n\n"
+                    f"--- AMICA STDERR ---\n{e.stderr}"
+                )
+                print(error_msg)
+                self.training_failed.emit(error_msg)
+            except FileNotFoundError:
+                # 如果找不到W.txt等输出文件
+                error_msg = "AMICA ran but did not produce output files. Check AMICA logs above."
+                print(error_msg)
+                self.training_failed.emit(error_msg)
+            except Exception as e:
+                # 其他所有未知错误
+                error_msg = f"An unexpected error occurred during manual AMICA call: {e}"
+                print(error_msg)
+                self.training_failed.emit(error_msg)

@@ -119,7 +119,7 @@ class MainWindow(QMainWindow):
 
     def __init__(self):
         super().__init__()
-        amica_path = r'F:\ESP32\Prj\ExGMP\bin\amica15.exe'
+        amica_path = r'F:\YuePrj\ExGMP\bin\amica15.exe'
         # 检查路径是否存在
         if not os.path.exists(amica_path):
             print(f"\n\n[FATAL ERROR] AMICA executable not found at: {amica_path}")
