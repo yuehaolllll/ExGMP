@@ -366,6 +366,7 @@ class MainWindow(QMainWindow):
 
         self.tools_panel.eog_acquisition_triggered.connect(self.acquisition_controller.start)
         self.tools_panel.ica_toggle_changed.connect(self.data_processor.toggle_ica)
+        self.tools_panel.ica_calibration_triggered.connect(self.data_processor.start_ica_calibration)
         self.data_processor.calibration_data_ready.connect(self._on_calibration_data_ready)
         self.ica_processor.training_finished.connect(self._on_ica_training_finished)
         self.ica_processor.training_failed.connect(self._on_ica_training_failed)
