@@ -115,23 +115,56 @@ class TimeDomainWidget(QWidget):
         view = pg.GraphicsLayoutWidget()
         view.ci.layout.setSpacing(0)
         self.individual_plots, self.individual_curves = [], []
+
+        # Link all X axes together
         for i in range(NUM_CHANNELS):
             p = view.addPlot(row=i, col=0)
+            if self.individual_plots:  # Link to the previous plot's X axis
+                p.setXLink(self.individual_plots[0])
 
             p.setDownsampling(mode='peak')
             p.setClipToView(True)
+            p.setLabel('left', f"CH {i + 1}", units='µV', color=PLOT_COLORS[i])
 
-            p.setYLink(None)
-            p.setLabel('left', f"CH {i+1}", units='µV', color=PLOT_COLORS[i])
-            p.setLabel('bottom', 'Time', units='s')
+            # --- THE FIX ---
+            # Hide the X axis for all plots except the last one
+            if i < NUM_CHANNELS - 1:
+                p.hideAxis('bottom')
+            else:
+                # Only the last plot shows the shared X axis label
+                p.setLabel('bottom', 'Time', units='s')
+
             p.showGrid(x=True, y=True, alpha=0.4)
             p.setYRange(-self.individual_scales[i], self.individual_scales[i])
             p.getViewBox().setMouseEnabled(y=True)
             p.getViewBox().sigYRangeChanged.connect(partial(self._on_individual_y_range_changed, i))
+
             curve = p.plot(pen=pg.mkPen(color=PLOT_COLORS[i], width=1.5))
             self.individual_plots.append(p)
             self.individual_curves.append(curve)
+
         return view
+    # def _create_individual_view(self):
+    #     view = pg.GraphicsLayoutWidget()
+    #     view.ci.layout.setSpacing(0)
+    #     self.individual_plots, self.individual_curves = [], []
+    #     for i in range(NUM_CHANNELS):
+    #         p = view.addPlot(row=i, col=0)
+    #
+    #         p.setDownsampling(mode='peak')
+    #         p.setClipToView(True)
+    #
+    #         p.setYLink(None)
+    #         p.setLabel('left', f"CH {i+1}", units='µV', color=PLOT_COLORS[i])
+    #         p.setLabel('bottom', 'Time', units='s')
+    #         p.showGrid(x=True, y=True, alpha=0.4)
+    #         p.setYRange(-self.individual_scales[i], self.individual_scales[i])
+    #         p.getViewBox().setMouseEnabled(y=True)
+    #         p.getViewBox().sigYRangeChanged.connect(partial(self._on_individual_y_range_changed, i))
+    #         curve = p.plot(pen=pg.mkPen(color=PLOT_COLORS[i], width=1.5))
+    #         self.individual_plots.append(p)
+    #         self.individual_curves.append(curve)
+    #     return view
 
     def _update_stacked_y_range(self):
         """根据当前的 stacked_view_scale 来更新Y轴的可见范围"""
