@@ -90,6 +90,10 @@ class TimeDomainWidget(QWidget):
     def _create_stacked_view(self):
         view = pg.GraphicsLayoutWidget()
         self.stacked_plot = view.addPlot(row=0, col=0)
+
+        self.stacked_plot.setDownsampling(mode='peak')
+        self.stacked_plot.setClipToView(True)
+
         self.stacked_plot.setLabel('bottom', 'Time', units='s')
         self.stacked_plot.hideAxis('left')
         self.stacked_plot.showGrid(x=True, y=True, alpha=0.4)
@@ -113,6 +117,10 @@ class TimeDomainWidget(QWidget):
         self.individual_plots, self.individual_curves = [], []
         for i in range(NUM_CHANNELS):
             p = view.addPlot(row=i, col=0)
+
+            p.setDownsampling(mode='peak')
+            p.setClipToView(True)
+
             p.setYLink(None)
             p.setLabel('left', f"CH {i+1}", units='µV', color=PLOT_COLORS[i])
             p.setLabel('bottom', 'Time', units='s')
@@ -187,13 +195,31 @@ class TimeDomainWidget(QWidget):
             current_samples = len(self.data_buffers[0])
             if current_samples == 0: return
             data_source = [np.array(buf) for buf in self.data_buffers]
-            time_vector = np.linspace(0, self.plot_seconds * (current_samples / self.plot_window_samples), current_samples)
+            # 时间轴现在直接根据真实采样率计算
+            time_vector = np.linspace(0, self.plot_seconds, current_samples)
+
         scale = self.stacked_view_scale
         if abs(scale) < 1e-9: scale = 1e-9
         for i in range(NUM_CHANNELS):
             offset = (NUM_CHANNELS - 1 - i) * CHANNEL_HEIGHT
             scaled_data = (data_source[i] / scale * CHANNEL_HEIGHT / 2) + offset
             self.stacked_curves[i].setData(x=time_vector, y=scaled_data)
+    # def _redraw_stacked(self):
+    #     if self.is_review_mode:
+    #         if self.static_data is None: return
+    #         data_source = self.static_data
+    #         time_vector = self.static_time_vector
+    #     else:
+    #         current_samples = len(self.data_buffers[0])
+    #         if current_samples == 0: return
+    #         data_source = [np.array(buf) for buf in self.data_buffers]
+    #         time_vector = np.linspace(0, self.plot_seconds * (current_samples / self.plot_window_samples), current_samples)
+    #     scale = self.stacked_view_scale
+    #     if abs(scale) < 1e-9: scale = 1e-9
+    #     for i in range(NUM_CHANNELS):
+    #         offset = (NUM_CHANNELS - 1 - i) * CHANNEL_HEIGHT
+    #         scaled_data = (data_source[i] / scale * CHANNEL_HEIGHT / 2) + offset
+    #         self.stacked_curves[i].setData(x=time_vector, y=scaled_data)
 
     def _redraw_individual(self):
         if self.is_review_mode:
@@ -204,9 +230,23 @@ class TimeDomainWidget(QWidget):
             current_samples = len(self.data_buffers[0])
             if current_samples == 0: return
             data_source = [np.array(buf) for buf in self.data_buffers]
-            time_vector = np.linspace(0, self.plot_seconds * (current_samples / self.plot_window_samples), current_samples)
+            # 时间轴现在直接根据真实采样率计算
+            time_vector = np.linspace(0, self.plot_seconds, current_samples)
+
         for i in range(NUM_CHANNELS):
             self.individual_curves[i].setData(x=time_vector, y=data_source[i])
+    # def _redraw_individual(self):
+    #     if self.is_review_mode:
+    #         if self.static_data is None: return
+    #         data_source = self.static_data
+    #         time_vector = self.static_time_vector
+    #     else:
+    #         current_samples = len(self.data_buffers[0])
+    #         if current_samples == 0: return
+    #         data_source = [np.array(buf) for buf in self.data_buffers]
+    #         time_vector = np.linspace(0, self.plot_seconds * (current_samples / self.plot_window_samples), current_samples)
+    #     for i in range(NUM_CHANNELS):
+    #         self.individual_curves[i].setData(x=time_vector, y=data_source[i])
 
     def update_plot(self, data_chunk):
         if self.is_review_mode: return # 回顾模式下忽略新的实时数据
@@ -239,18 +279,43 @@ class TimeDomainWidget(QWidget):
     @pyqtSlot(int)
     def set_plot_duration(self, seconds):
         if self.is_review_mode: return
-        self.plot_seconds, self.plot_window_samples = seconds, int(self.sampling_rate / DOWNSAMPLE_FACTOR * seconds)
+
+        # 不再除以 DOWNSAMPLE_FACTOR
+        self.plot_seconds = seconds
+        self.plot_window_samples = int(self.sampling_rate * self.plot_seconds)
+
+        # 更新X轴范围
         for p in self.individual_plots: p.setXRange(0, self.plot_seconds)
         self.stacked_plot.setXRange(0, self.plot_seconds)
+
+        # 更新标签位置
         for i, label in enumerate(self.stacked_labels):
             offset = (NUM_CHANNELS - 1 - i) * CHANNEL_HEIGHT
             label.setPos(-0.05 * self.plot_seconds, offset)
+
+        # 重建缓冲区以适应新的长度
         for i in range(NUM_CHANNELS):
-            current_data = list(self.data_buffers[i]);
+            current_data = list(self.data_buffers[i])
             new_buffer = collections.deque(maxlen=self.plot_window_samples)
-            new_buffer.extend(current_data);
+            new_buffer.extend(current_data)
             self.data_buffers[i] = new_buffer
+
         self._redraw_all_channels()
+    # @pyqtSlot(int)
+    # def set_plot_duration(self, seconds):
+    #     if self.is_review_mode: return
+    #     self.plot_seconds, self.plot_window_samples = seconds, int(self.sampling_rate / DOWNSAMPLE_FACTOR * seconds)
+    #     for p in self.individual_plots: p.setXRange(0, self.plot_seconds)
+    #     self.stacked_plot.setXRange(0, self.plot_seconds)
+    #     for i, label in enumerate(self.stacked_labels):
+    #         offset = (NUM_CHANNELS - 1 - i) * CHANNEL_HEIGHT
+    #         label.setPos(-0.05 * self.plot_seconds, offset)
+    #     for i in range(NUM_CHANNELS):
+    #         current_data = list(self.data_buffers[i]);
+    #         new_buffer = collections.deque(maxlen=self.plot_window_samples)
+    #         new_buffer.extend(current_data);
+    #         self.data_buffers[i] = new_buffer
+    #     self._redraw_all_channels()
 
     @pyqtSlot(int, float)
     def adjust_scale(self, channel, scale):

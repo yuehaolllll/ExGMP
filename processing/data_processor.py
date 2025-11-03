@@ -118,8 +118,9 @@ class DataProcessor(QObject):
         # --- 后续处理 ---
         self.fft_data_buffer.extend(filtered_chunk.T)
         self.packet_counter += len(all_chunks)
-        downsampled_data = filtered_chunk[:, ::DOWNSAMPLE_FACTOR]
-        self.time_data_ready.emit(downsampled_data)
+        #downsampled_data = filtered_chunk[:, ::DOWNSAMPLE_FACTOR]
+        #self.time_data_ready.emit(downsampled_data)
+        self.time_data_ready.emit(filtered_chunk)
 
     # --- (update_notch_filter, calculate_fft, start/stop_recording 保持不变) ---
     @pyqtSlot(bool, float)
