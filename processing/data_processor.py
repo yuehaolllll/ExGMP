@@ -17,7 +17,6 @@ BANDS = {
     'Beta': [13, 30], 'Gamma': [30, 100]
 }
 
-
 class DataProcessor(QObject):
     recording_finished = pyqtSignal([dict], [type(None)])
     time_data_ready = pyqtSignal(np.ndarray)
@@ -32,7 +31,6 @@ class DataProcessor(QObject):
 
     def __init__(self):
         super().__init__()
-        print(f"[DEBUG] DataProcessor __init__ on thread: {QThread.currentThreadId()}")
         self.raw_data_buffer = collections.deque()
         self.processing_timer = None
         self.sampling_rate = 1000  # 默认值
@@ -40,7 +38,6 @@ class DataProcessor(QObject):
         self.fft_data_buffer = collections.deque(maxlen=self.fft_samples)
         self.packet_counter = 0
         self.fft_timer = None
-        #self.calibration_timer = None
         self.is_recording = False
         self.recording_buffer = []
         self.markers = {'timestamps': [], 'labels': []}
@@ -52,9 +49,11 @@ class DataProcessor(QObject):
         self.update_notch_filter(False, 50.0)
         self.channel_names = [f'CH {i + 1}' for i in range(NUM_CHANNELS)]
 
+        self.calibration_timer = None
+
         # --- 用于 ICA 校准的状态变量 ---
-        #self.is_calibrating_ica = False
-        #self.ica_calibration_buffer = []
+        self.is_calibrating_ica = False
+        self.ica_calibration_buffer = []
 
         # --- 用于 ICA 应用的状态变量 ---
         self.ica_model = None
@@ -120,8 +119,8 @@ class DataProcessor(QObject):
         else:
             filtered_chunk = notched_chunk
 
-        # if self.is_calibrating_ica:
-        #     self.ica_calibration_buffer.append(filtered_chunk)
+        if self.is_calibrating_ica:
+            self.ica_calibration_buffer.append(filtered_chunk)
             # # 检查是否已达到校准时长
             # if time.time() - self.calibration_start_time >= self.calibration_duration:
             #     self.finish_ica_calibration()
@@ -137,70 +136,48 @@ class DataProcessor(QObject):
         # --- 关键修复 2：现在我们保存【滤波后】的数据 ---
         if self.is_recording:
             # 使用 filtered_chunk，而不是 large_chunk
-            self.recording_buffer.append(filtered_chunk)
+            self.recording_buffer.append(final_chunk)
             # 样本数的累加保持不变
-            self.total_recorded_samples += filtered_chunk.shape[1]
+            self.total_recorded_samples += final_chunk.shape[1]
 
         # --- 后续处理 ---
         self.fft_data_buffer.extend(filtered_chunk.T)
         self.packet_counter += len(all_chunks)
-        #downsampled_data = filtered_chunk[:, ::DOWNSAMPLE_FACTOR]
-        #self.time_data_ready.emit(downsampled_data)
-        self.time_data_ready.emit(filtered_chunk)
+        # downsampled_data = filtered_chunk[:, ::DOWNSAMPLE_FACTOR]
+        # self.time_data_ready.emit(downsampled_data)
+        self.time_data_ready.emit(final_chunk)
 
-    @pyqtSlot()
-    def trigger_ica_computation(self):
-        """
-        从缓冲区获取最近的数据，并将其发送出去用于ICA计算。
-        """
-        # 我们使用 fft_data_buffer，因为它保存了最近一段时间的滤波后数据
-        if len(self.fft_data_buffer) < self.fft_samples:
-            print("Not enough data in buffer for ICA computation.")
-            # 可以在这里发一个失败信号来重置UI按钮
+    @pyqtSlot(int)
+    def start_ica_calibration(self, duration_seconds):
+        if self.is_calibrating_ica:
+            return  # 避免重复启动
+
+        print(f"Starting ICA calibration for {duration_seconds} seconds.")
+        # self.calibration_duration = duration_seconds
+        self.ica_calibration_buffer = []
+        self.is_calibrating_ica = True
+        # self.calibration_start_time = time.time()
+        self.calibration_timer.start(duration_seconds * 1000)
+
+    def finish_ica_calibration(self):
+        # 这个方法现在由定时器精确调用，其内部逻辑是正确的，无需修改
+        if not self.is_calibrating_ica:
+            # 防止因意外情况（如快速连续点击）导致重复调用
             return
 
-        # 将 deque 转换为 numpy 数组
-        # fft_data_buffer 的形状是 (n_samples, n_channels)，我们需要转置
-        recent_data = np.array(self.fft_data_buffer).T
-        print(f"Triggered ICA computation with data of shape: {recent_data.shape}")
+        print("Finished collecting ICA calibration data via QTimer.")
+        self.is_calibrating_ica = False
 
-        # 直接发出信号，将数据发送给 MainWindow
-        self.calibration_data_ready.emit(recent_data)
+        if not self.ica_calibration_buffer:
+            print("Warning: No data collected for ICA calibration.")
+            # 即使没有数据，也需要通知UI训练失败或结束
+            # 这里可以根据需要发出一个失败信号
+            return
 
-    # @pyqtSlot(int)
-    # def start_ica_calibration(self, duration_seconds):
-    #     if self.is_calibrating_ica:
-    #         return
-    #
-    #     # 检查 calibration_timer 是否已正确创建
-    #     if self.calibration_timer is None:
-    #         print("[ERROR] start_ica_calibration called but timer is not initialized. Aborting.")
-    #         return
-    #
-    #     print(f"Starting ICA calibration for {duration_seconds} seconds on thread {QThread.currentThreadId()}.")
-    #     self.ica_calibration_buffer = []
-    #     self.is_calibrating_ica = True
-    #     self.calibration_timer.start(duration_seconds * 1000)
+        full_calibration_data = np.concatenate(self.ica_calibration_buffer, axis=1)
+        self.ica_calibration_buffer = []
 
-    # def finish_ica_calibration(self):
-    #     # 添加一个非常明显的打印语句，确认此方法是否被调用
-    #     print("\n\n>>> FINISH ICA CALIBRATION CALLED! <<<\n\n")
-    #
-    #     if not self.is_calibrating_ica:
-    #         return
-    #
-    #     print("Finished collecting ICA calibration data via QTimer.")
-    #     self.is_calibrating_ica = False
-    #
-    #     if not self.ica_calibration_buffer:
-    #         print("Warning: No data collected for ICA calibration.")
-    #         # TODO: Consider emitting a failure signal to reset the UI
-    #         return
-    #
-    #     full_calibration_data = np.concatenate(self.ica_calibration_buffer, axis=1)
-    #     self.ica_calibration_buffer = []
-    #
-    #     self.calibration_data_ready.emit(full_calibration_data)
+        self.calibration_data_ready.emit(full_calibration_data)
 
     def apply_ica_cleaning(self, data_chunk):
         """
@@ -213,7 +190,7 @@ class DataProcessor(QObject):
 
             # 2. 将标记为伪迹的成分置零
             #    这是一个高效的 numpy 操作
-            if self.ica_bad_indices: # 只有在有坏道时才操作
+            if self.ica_bad_indices:  # 只有在有坏道时才操作
                 sources[:, self.ica_bad_indices] = 0
 
             # 3. 重建信号 -> 得到清洗后的数据
@@ -339,7 +316,6 @@ class DataProcessor(QObject):
             print(f"Marker '{label}' added at sample {marker_timestamp}")
             self.marker_added_live.emit()
 
-
     @pyqtSlot()
     def start(self):
         """
@@ -359,10 +335,10 @@ class DataProcessor(QObject):
             self.fft_timer.setInterval(int(1000 / FFT_UPDATE_RATE))
             self.fft_timer.timeout.connect(self.calculate_fft)
 
-        # if self.calibration_timer is None:
-        #     self.calibration_timer = QTimer(self)  # 将 self 作为父对象
-        #     self.calibration_timer.setSingleShot(True)
-        #     self.calibration_timer.timeout.connect(self.finish_ica_calibration)
+        if self.calibration_timer is None:
+            self.calibration_timer = QTimer(self)  # 将 self 作为父对象
+            self.calibration_timer.setSingleShot(True)
+            self.calibration_timer.timeout.connect(self.finish_ica_calibration)
 
         # 2. 清空缓冲区并启动常规定时器
         self.raw_data_buffer.clear()
@@ -379,12 +355,12 @@ class DataProcessor(QObject):
             self.processing_timer.stop()
         if self.fft_timer and self.fft_timer.isActive():
             self.fft_timer.stop()
-        # if self.calibration_timer and self.calibration_timer.isActive():
-        #     self.calibration_timer.stop()
-        #     if self.is_calibrating_ica:
-        #         self.is_calibrating_ica = False
-        #         self.ica_calibration_buffer = []
-        #         print("ICA calibration was cancelled.")
+        if self.calibration_timer and self.calibration_timer.isActive():
+            self.calibration_timer.stop()
+            if self.is_calibrating_ica:
+                self.is_calibrating_ica = False
+                self.ica_calibration_buffer = []
+                print("ICA calibration was cancelled.")
 
         if self.is_recording:
             self.stop_recording()

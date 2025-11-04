@@ -1,9 +1,8 @@
-# In ui/widgets/tools_panel.py (FINAL AND CORRECTED VERSION)
+# In ui/widgets/tools_panel.py
 
 from PyQt6.QtWidgets import QWidget, QVBoxLayout, QPushButton, QGroupBox, QGridLayout, QLabel, QCheckBox
 from PyQt6.QtCore import pyqtSignal
 
-# This style remains the same, but will now work correctly.
 MENU_BUTTON_STYLE = """
     QPushButton {
         background: transparent;
@@ -27,13 +26,8 @@ MENU_BUTTON_STYLE = """
     }
 """
 
-
 class ToolsPanel(QWidget):
-    """
-    一个包含所有辅助采集工具的自定义面板，用于嵌入到菜单中。
-    """
     eog_acquisition_triggered = pyqtSignal()
-
     # 信号1: 请求开始 ICA 校准，并告知需要的数据时长
     ica_calibration_triggered = pyqtSignal(int)
     # 信号2: 切换 ICA 清理功能的状态 (启用/禁用)
@@ -67,9 +61,9 @@ class ToolsPanel(QWidget):
         ica_layout.setSpacing(8)
 
         # 1. 开始校准按钮
-        self.calibrate_ica_btn = QPushButton("Compute ICA")
-        self.calibrate_ica_btn.setToolTip("Run AMICA on recent data to find artifact components.")
-        self.calibrate_ica_btn.clicked.connect(self.ica_calibration_triggered.emit)
+        self.calibrate_ica_btn = QPushButton("Start Calibration")
+        self.calibrate_ica_btn.setToolTip("Collect 30s of data to train the ICA model.")
+        self.calibrate_ica_btn.clicked.connect(self._on_start_calibration)
 
         # 2. 状态标签
         self.ica_status_lbl = QLabel("Status: Not Calibrated")
@@ -88,16 +82,19 @@ class ToolsPanel(QWidget):
         self.update_status(False)
 
     def _on_start_calibration(self):
-        # 这个方法现在变得非常简单
-        self.ica_calibration_triggered.emit()  # <-- 直接发射无参数信号
+        # 这里可以设置校准时长，暂时硬编码为30秒
+        calibration_duration_seconds = 30
+        self.ica_calibration_triggered.emit(calibration_duration_seconds)
+
+        # 更新UI，防止重复点击
         self.calibrate_ica_btn.setEnabled(False)
-        self.ica_status_lbl.setText("Status: Computing ICA...")  # <-- 文本已更改
+        self.ica_status_lbl.setText("Status: Calibrating...")
 
     def set_calibration_finished(self):
         """一个公开方法，当ICA模型训练完成后由外部调用"""
         self.ica_status_lbl.setText("Status: Ready to Enable")
-        self.calibrate_ica_btn.setEnabled(True)
-        self.enable_ica_checkbox.setEnabled(True)
+        self.calibrate_ica_btn.setEnabled(True)  # 允许重新校准
+        self.enable_ica_checkbox.setEnabled(True)  # 现在可以启用了
 
     def update_status(self, is_connected):
         """根据连接状态更新面板UI"""

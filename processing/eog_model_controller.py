@@ -14,7 +14,7 @@ from .rsca_model import RSCA_Net
 MODEL_PATH = "./models/rsca_net_8class_1.pth"
 CLASS_LABELS = ['up', 'down', 'left', 'right', 'blink_once', 'blink_twice', 'blink_three', 'fixation']
 CONFIDENCE_THRESHOLD = 0.75
-COOLDOWN_PERIOD = 0.7  # 冷却时间可以稍微延长一点
+COOLDOWN_PERIOD = 0.5  # 冷却时间可以稍微延长一点
 
 # --- 窗口构成常量 ---
 PREDICTION_WINDOW_SAMPLES = 250
@@ -28,7 +28,7 @@ EVENT_TRIGGER_THRESHOLD = 35.0
 # 低阈值：用于回溯寻找事件的真正起点
 EVENT_SEARCH_THRESHOLD = 15.0  # 应该远低于高阈值
 # 最大回溯长度（点数），防止无限回溯
-MAX_BACKTRACE_SAMPLES = 200
+MAX_BACKTRACE_SAMPLES = 100
 
 
 class ModelController(QObject):
