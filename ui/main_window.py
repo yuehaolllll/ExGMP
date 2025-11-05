@@ -729,7 +729,7 @@ class MainWindow(QMainWindow):
         它将触发后台 ICA 训练。
         """
         # 更新UI状态，告知用户训练已开始
-        self.tools_panel.ica_status_lbl.setText("Status: Training model...")
+        self.tools_panel.set_training_state()
 
         # 使用 QMetaObject.invokeMethod 安全地跨线程调用 train 方法
         # 这会将数据传递给 ICAProcessor 并在其自己的线程中执行 train()

@@ -42,22 +42,14 @@ class ToolsPanel(QWidget):
         main_layout.setContentsMargins(5, 5, 5, 5)
         main_layout.setSpacing(2)
 
-        # 1. EOG 指南按钮 (保持不变)
+        # 1. EOG 指南按钮
         self.eog_button = QPushButton("EOG Acquisition Guide")
         self.eog_button.setStyleSheet(MENU_BUTTON_STYLE)
         self.eog_button.setFlat(True)
         self.eog_button.clicked.connect(self.eog_acquisition_triggered.emit)
         main_layout.addWidget(self.eog_button)
 
-        # 2. 分割线 (保持不变)
-        separator = QFrame()
-        separator.setFrameShape(QFrame.Shape.HLine)
-        separator.setFrameShadow(QFrame.Shadow.Sunken)
-        separator.setStyleSheet("margin: 5px 10px; border: 1px solid #E0E0E0;")
-        main_layout.addWidget(separator)
-
-        # --- 3. 创建带子菜单的ICA功能按钮 (核心修改) ---
-
+        # --- 3. 创建带子菜单的ICA功能按钮 ---
         # a. 创建主按钮
         self.ica_menu_button = QPushButton("ICA Artifact Removal")
         self.ica_menu_button.setStyleSheet(MENU_BUTTON_STYLE)
@@ -125,3 +117,8 @@ class ToolsPanel(QWidget):
             # 只有当模型校准完成后，enable_action才应该是可用的
             if self.calibrate_action.text() == "Calibrate ICA Model":
                 self.enable_action.setEnabled(False)
+
+    def set_training_state(self):
+        """一个由外部调用的新方法，用于将UI更新为“正在训练”状态"""
+        self.calibrate_action.setText("Training model...")
+        self.calibrate_action.setEnabled(False)  # 保持禁用状态
