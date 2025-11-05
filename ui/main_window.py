@@ -730,12 +730,14 @@ class MainWindow(QMainWindow):
         """
         # 更新UI状态，告知用户训练已开始
         self.tools_panel.set_training_state()
+        current_sample_rate = self.data_processor.sampling_rate
 
         # 使用 QMetaObject.invokeMethod 安全地跨线程调用 train 方法
         # 这会将数据传递给 ICAProcessor 并在其自己的线程中执行 train()
         QMetaObject.invokeMethod(self.ica_processor, "train",
                                  Qt.ConnectionType.QueuedConnection,
-                                 Q_ARG(np.ndarray, data))
+                                 Q_ARG(np.ndarray, data),
+                                 Q_ARG(int, current_sample_rate))
 
     @pyqtSlot(object, np.ndarray)
     def _on_ica_training_finished(self, ica_model, components):

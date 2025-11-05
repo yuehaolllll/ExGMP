@@ -4,6 +4,13 @@ from PyQt6.QtCore import QObject, pyqtSignal, pyqtSlot, QTimer, QThread
 import scipy.signal as signal
 import time
 
+try:
+    from mne import create_info
+    from mne.io import RawArray
+except ImportError:
+    print("Warning: MNE-Python is not installed. ICA cleaning will not be available.")
+    create_info, RawArray = None, None
+
 # --- 常量 ---
 #SAMPLING_RATE = 2000
 NUM_CHANNELS = 8
@@ -181,30 +188,34 @@ class DataProcessor(QObject):
 
     def apply_ica_cleaning(self, data_chunk):
         """
-        使用已训练的ICA模型移除伪迹成分。
+        使用已训练的 MNE ICA 模型移除伪迹成分。
         """
+        # --- 核心修改 3b: 全新的实现 ---
+        if create_info is None or self.ica_model is None:
+            return data_chunk
+
         try:
-            # 1. 分解信号 -> 获取源信号
-            #    FastICA 模型需要 (n_samples, n_features) 格式，所以需要转置
-            sources = self.ica_model.transform(data_chunk.T)
+            # 1. MNE 的 ICA 对象需要知道数据的元信息。
+            # 幸运的是，训练好的模型里已经保存了这些信息！
+            info = self.ica_model.info
 
-            # 2. 将标记为伪迹的成分置零
-            #    这是一个高效的 numpy 操作
-            if self.ica_bad_indices:  # 只有在有坏道时才操作
-                sources[:, self.ica_bad_indices] = 0
+            # 2. 实时地将数据块包装成一个临时的 MNE RawArray 对象
+            raw_chunk = RawArray(data_chunk, info, verbose=False)
 
-            # 3. 重建信号 -> 得到清洗后的数据
-            #    使用模型的 inverse_transform 方法
-            cleaned_data_transposed = self.ica_model.inverse_transform(sources)
+            # 3. 调用 MNE 强大且简洁的 apply 方法
+            # 我们直接告诉它要排除哪些坏道，它会完成所有复杂的数学运算
+            cleaned_raw_chunk = self.ica_model.apply(
+                raw_chunk,
+                exclude=self.ica_bad_indices,
+                verbose=False
+            )
 
-            # 4. 转置回原始格式 (n_channels, n_samples) 并返回
-            return cleaned_data_transposed.T
+            # 4. 从结果中提取出 NumPy 数组并返回
+            return cleaned_raw_chunk.get_data()
 
         except Exception as e:
-            print(f"Error during ICA cleaning: {e}. Disabling ICA.")
-            # 发生错误时，自动禁用以防程序崩溃
+            print(f"Error during MNE ICA cleaning: {e}. Disabling ICA.")
             self.ica_enabled = False
-            # 返回原始数据块
             return data_chunk
 
     @pyqtSlot(bool)
