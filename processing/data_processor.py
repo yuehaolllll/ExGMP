@@ -188,34 +188,36 @@ class DataProcessor(QObject):
 
     def apply_ica_cleaning(self, data_chunk):
         """
-        使用已训练的 MNE ICA 模型移除伪迹成分。
+        使用预计算的矩阵高效地应用ICA伪迹去除。
+        此方法只包含NumPy矩阵运算，速度极快。
         """
-        # --- 核心修改 3b: 全新的实现 ---
-        if create_info is None or self.ica_model is None:
+        # 检查矩阵是否已准备好
+        if self.unmixing_matrix_ is None:
             return data_chunk
 
         try:
-            # 1. MNE 的 ICA 对象需要知道数据的元信息。
-            # 幸运的是，训练好的模型里已经保存了这些信息！
-            info = self.ica_model.info
+            # 1. 将数据投影到独立成分空间 (sources = W * X)
+            # data_chunk: (n_channels, n_samples)
+            # self.unmixing_matrix_: (n_components, n_channels)
+            ica_sources = self.unmixing_matrix_ @ data_chunk
 
-            # 2. 实时地将数据块包装成一个临时的 MNE RawArray 对象
-            raw_chunk = RawArray(data_chunk, info, verbose=False)
+            # 2. 将被标记为伪迹的成分置零 (通过广播乘法)
+            # self.zeroing_vector_[:, np.newaxis] 将 (n_components,) 向量变为 (n_components, 1)
+            # 这样它就可以和 (n_components, n_samples) 的 ica_sources 矩阵相乘
+            ica_sources *= self.zeroing_vector_[:, np.newaxis]
 
-            # 3. 调用 MNE 强大且简洁的 apply 方法
-            # 我们直接告诉它要排除哪些坏道，它会完成所有复杂的数学运算
-            cleaned_raw_chunk = self.ica_model.apply(
-                raw_chunk,
-                exclude=self.ica_bad_indices,
-                verbose=False
-            )
+            # 3. 将干净的成分重构回信号空间 (cleaned = M * sources)
+            # self.mixing_matrix_: (n_channels, n_components)
+            cleaned_chunk = self.mixing_matrix_ @ ica_sources
 
-            # 4. 从结果中提取出 NumPy 数组并返回
-            return cleaned_raw_chunk.get_data()
+            return cleaned_chunk
 
         except Exception as e:
-            print(f"Error during MNE ICA cleaning: {e}. Disabling ICA.")
+            print(f"Error during matrix-based ICA cleaning: {e}. Disabling ICA.")
             self.ica_enabled = False
+            # 发生错误时，禁用ICA并返回原始数据块以保证程序继续运行
+            self.unmixing_matrix_ = None
+            self.mixing_matrix_ = None
             return data_chunk
 
     @pyqtSlot(bool)
@@ -231,9 +233,32 @@ class DataProcessor(QObject):
 
     @pyqtSlot(object, list)
     def set_ica_parameters(self, model, bad_indices):
+        """
+        接收训练好的ICA模型和坏道索引，并预先计算用于实时处理的矩阵，以实现最高性能。
+        """
         print(f"DataProcessor received ICA model. Bad components: {bad_indices}")
-        self.ica_model = model
+        self.ica_model = model  # 仍然保留对原始模型的引用
         self.ica_bad_indices = bad_indices
+
+        # --- 性能优化：预计算矩阵 ---
+        if self.ica_model is not None:
+            # 获取分解矩阵 (将信号转换为独立成分)
+            self.unmixing_matrix_ = self.ica_model.unmixing_matrix_
+
+            # 获取混合矩阵 (将独立成分重构为信号)
+            self.mixing_matrix_ = self.ica_model.mixing_matrix_
+
+            # 创建一个“置零向量”，用于快速剔除坏道成分
+            # 创建一个全为1的向量
+            self.zeroing_vector_ = np.ones(self.ica_model.n_components_)
+            # 将坏道索引对应位置的元素设为0
+            self.zeroing_vector_[bad_indices] = 0
+            print("Info: Pre-calculated ICA matrices for real-time cleaning.")
+        else:
+            # 如果模型被移除，则清空矩阵
+            self.unmixing_matrix_ = None
+            self.mixing_matrix_ = None
+            self.zeroing_vector_ = None
 
     @pyqtSlot(bool, float)
     def update_notch_filter(self, enabled, freq):

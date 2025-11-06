@@ -739,39 +739,38 @@ class MainWindow(QMainWindow):
                                  Q_ARG(np.ndarray, data),
                                  Q_ARG(int, current_sample_rate))
 
-    @pyqtSlot(object, np.ndarray)
-    def _on_ica_training_finished(self, ica_model, components):
+    @pyqtSlot(object, np.ndarray, list)
+    def _on_ica_training_finished(self, ica_model, components, suggested_indices):
         """
         当后台 ICA 训练完成后，此槽被调用。
-        它将启动用户交互对话框。
+        现在它能接收自动检测到的伪迹索引，并将其传递给对话框。
         """
-        print("MainWindow: Received trained ICA model. Launching selection dialog.")
+        print(
+            f"MainWindow: Received trained ICA model. MNE suggested {suggested_indices} as artifacts. Launching dialog.")
 
-        # --- 2. 替换模拟代码为真实对话框逻辑 ---
-
-        # 创建并显示对话框
-        # 我们需要当前的采样率来正确显示时间轴
+        # 获取当前采样率，这部分逻辑不变
         current_sample_rate = self.data_processor.sampling_rate
-        dialog = ICAComponentDialog(components, current_sample_rate, self)
 
-        # exec()会阻塞，直到用户关闭对话框
+        # --- 2. 在创建对话框时，将 `suggested_indices` 作为新参数传递进去 ---
+        # dialog = ICAComponentDialog(components, current_sample_rate, self) # 旧的调用方式
+        dialog = ICAComponentDialog(
+            components_data=components,
+            sampling_rate=current_sample_rate,
+            parent=self,
+            suggested_indices=suggested_indices  # <- 新增的参数
+        )
+
+        # 后续的逻辑完全保持不变，因为对话框内部已经处理了自动勾选
         result = dialog.exec()
 
-        # 检查用户是否点击了 "OK"
         if result == QDialog.DialogCode.Accepted:
-            # 获取用户选择的伪迹成分索引
             bad_indices = dialog.get_selected_indices()
-            print(f"User selected components {bad_indices} as artifacts.")
+            print(f"User confirmed/selected components {bad_indices} as artifacts.")
 
-            # 将训练好的模型和用户选择的伪迹索引发送给 DataProcessor
             self.data_processor.set_ica_parameters(ica_model, bad_indices)
-
-            # 更新 UI，告知用户校准已完成，可以启用功能了
             self.tools_panel.set_calibration_finished()
         else:
-            # 如果用户点击 "Cancel" 或关闭了窗口
             print("User cancelled ICA component selection.")
-            # 重置UI状态，允许用户重新开始校准
             self.tools_panel.update_status(self.is_session_running)
 
     @pyqtSlot(str)

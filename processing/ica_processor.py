@@ -8,6 +8,8 @@ try:
     from mne.preprocessing import ICA
     from mne import create_info
     from mne.io import RawArray
+    from mne.preprocessing.eog import create_eog_epochs
+    from mne.preprocessing.eog import find_bads_eog
 except ImportError:
     print("Error: MNE-Python is not installed. Please install it using 'pip install mne'")
     ICA, create_info, RawArray = None, None, None
@@ -18,7 +20,7 @@ class ICAProcessor(QObject):
     使用 MNE-Python 的 ICA 在后台线程中训练模型。
     这是一个更健壮、更专业的实现。
     """
-    training_finished = pyqtSignal(object, np.ndarray)
+    training_finished = pyqtSignal(object, np.ndarray, list)
     training_failed = pyqtSignal(str)
 
     # --- 核心修改 1: train 方法现在需要 sampling_rate ---
@@ -26,44 +28,62 @@ class ICAProcessor(QObject):
     def train(self, calibration_data, sampling_rate):
         """
         接收校准数据和采样率，并训练 MNE ICA 模型。
+        此版本硬编码地将前两个通道 (CH1, CH2) 设置为 EOG 通道。
         """
         if ICA is None:
             self.training_failed.emit("MNE-Python is not installed.")
             return
 
-        # calibration_data 的形状是 (n_channels, n_samples)
         n_channels, n_samples = calibration_data.shape
-        print(f"ICAProcessor (MNE): Starting training on data with shape {calibration_data.shape} at {sampling_rate} Hz...")
+        print(f"ICAProcessor: Starting training. Hard-coding CH1 and CH2 as EOG channels.")
+
+        # --- 检查通道数是否足够 ---
+        if n_channels < 3:
+            self.training_failed.emit(
+                f"Error: At least 3 channels are required for ICA with 2 EOG channels, but got {n_channels}.")
+            return
 
         try:
-            # 1. 创建 MNE 需要的 `info` 对象
-            # MNE 需要知道数据的元信息，比如通道名称和采样率
+            # --- 2. 动态生成通道名称和类型，固定前两个为EOG ---
             ch_names = [f'CH {i + 1}' for i in range(n_channels)]
-            info = create_info(ch_names=ch_names, sfreq=sampling_rate, ch_types='eeg')
+            ch_types = ['eeg'] * n_channels  # 先全部设为 'eeg'
 
-            # 2. 将 NumPy 数组包装成 MNE 的 RawArray 对象
+            # 将前两个通道的类型和名称设置为EOG
+            ch_types[0] = 'eog'
+            ch_types[1] = 'eog'
+            ch_names[0] = 'EOG_V'  # V for Vertical
+            ch_names[1] = 'EOG_H'  # H for Horizontal
+
+            print(f"Info: Channel types set to: {ch_types}")
+
+            info = create_info(ch_names=ch_names, sfreq=sampling_rate, ch_types=ch_types)
             raw = RawArray(calibration_data, info)
 
-            # 3. 初始化并训练 MNE ICA 模型
-            # 我们使用 picard 算法，它通常比 fastica 更稳定
-            # max_iter='auto' 会自动处理收敛问题
-            ica = ICA(n_components=n_channels,
+            # --- 3. ICA拟合 ---
+            # 计算EEG通道的数量，这对于设置 n_components 至关重要
+            n_eeg_channels = ch_types.count('eeg')
+            ica = ICA(n_components=n_eeg_channels,  # 成分数应等于EEG通道数
                       method='picard',
                       max_iter='auto',
-                      random_state=97) # 设置随机种子以保证结果可复现
-
+                      random_state=97)
+            # MNE的fit会自动选择`picks='eeg'`来训练，排除EOG通道
             ica.fit(raw)
 
-            # 4. 获取独立成分用于可视化
-            # ica.get_sources() 返回一个 Raw 对象，我们从中提取数据
+            # --- 4. 自动检测EOG伪迹 ---
+            # MNE的 find_bads_eog 非常智能，它会自动找到所有类型为 'eog' 的通道
+            # 并用它们来共同寻找相关的ICA成分。
+            print("Info: Automatically detecting EOG artifacts using all defined EOG channels...")
+            suggested_bad_indices, scores = find_bads_eog(raw)
+
+            print(f"Info: MNE suggested components {suggested_bad_indices} as EOG artifacts.")
+
+            # --- 5. 准备数据并发送信号 (逻辑不变) ---
             sources_raw = ica.get_sources(raw)
-            components_for_viz = sources_raw.get_data()
+            # 确保只提取与EEG通道数相匹配的成分进行可视化
+            components_for_viz = sources_raw.get_data(picks='eeg')
 
             print("ICAProcessor (MNE): Training finished successfully.")
-
-            # 5. 发出完成信号，将模型和成分数据传递回主线程
-            # 信号的“契约”保持不变，MainWindow 无需知道我们换了引擎
-            self.training_finished.emit(ica, components_for_viz)
+            self.training_finished.emit(ica, components_for_viz, suggested_bad_indices)
 
         except Exception as e:
             error_message = f"An error occurred during MNE ICA training: {e}"
