@@ -9,7 +9,7 @@ try:
     from mne import create_info
     from mne.io import RawArray
     from mne.preprocessing.eog import create_eog_epochs
-    from mne.preprocessing.eog import find_bads_eog
+    #from mne.preprocessing.eog import find_bads_eog
 except ImportError:
     print("Error: MNE-Python is not installed. Please install it using 'pip install mne'")
     ICA, create_info, RawArray = None, None, None
@@ -59,6 +59,9 @@ class ICAProcessor(QObject):
             info = create_info(ch_names=ch_names, sfreq=sampling_rate, ch_types=ch_types)
             raw = RawArray(calibration_data, info)
 
+            print("Info: High-pass filtering data at 1.0 Hz for better ICA performance...")
+            raw.filter(l_freq=1.0, h_freq=None)
+
             # --- 3. ICA拟合 ---
             # 计算EEG通道的数量，这对于设置 n_components 至关重要
             n_eeg_channels = ch_types.count('eeg')
@@ -72,15 +75,16 @@ class ICAProcessor(QObject):
             # --- 4. 自动检测EOG伪迹 ---
             # MNE的 find_bads_eog 非常智能，它会自动找到所有类型为 'eog' 的通道
             # 并用它们来共同寻找相关的ICA成分。
+            # 现在，我们调用 ica 对象自带的 find_bads_eog 方法
             print("Info: Automatically detecting EOG artifacts using all defined EOG channels...")
-            suggested_bad_indices, scores = find_bads_eog(raw)
+            suggested_bad_indices, scores = ica.find_bads_eog(raw)
 
             print(f"Info: MNE suggested components {suggested_bad_indices} as EOG artifacts.")
 
             # --- 5. 准备数据并发送信号 (逻辑不变) ---
             sources_raw = ica.get_sources(raw)
             # 确保只提取与EEG通道数相匹配的成分进行可视化
-            components_for_viz = sources_raw.get_data(picks='eeg')
+            components_for_viz = sources_raw.get_data()
 
             print("ICAProcessor (MNE): Training finished successfully.")
             self.training_finished.emit(ica, components_for_viz, suggested_bad_indices)

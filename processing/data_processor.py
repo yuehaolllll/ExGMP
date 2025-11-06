@@ -7,6 +7,7 @@ import time
 try:
     from mne import create_info
     from mne.io import RawArray
+    from mne import pick_types
 except ImportError:
     print("Warning: MNE-Python is not installed. ICA cleaning will not be available.")
     create_info, RawArray = None, None
@@ -189,35 +190,40 @@ class DataProcessor(QObject):
     def apply_ica_cleaning(self, data_chunk):
         """
         使用预计算的矩阵高效地应用ICA伪迹去除。
-        此方法只包含NumPy矩阵运算，速度极快。
+        此版本会先分离出EEG和EOG通道，只对EEG通道进行清理，然后将结果合并。
         """
-        # 检查矩阵是否已准备好
-        if self.unmixing_matrix_ is None:
+        # 检查矩阵和索引是否已准备好
+        if self.unmixing_matrix_ is None or self.eeg_indices_ is None:
             return data_chunk
 
         try:
-            # 1. 将数据投影到独立成分空间 (sources = W * X)
-            # data_chunk: (n_channels, n_samples)
-            # self.unmixing_matrix_: (n_components, n_channels)
-            ica_sources = self.unmixing_matrix_ @ data_chunk
+            # --- 1. 分离：从8通道数据中提取出EEG部分 ---
+            # eeg_indices_ 是一个索引数组，例如 [2, 3, 4, 5, 6, 7]
+            eeg_data = data_chunk[self.eeg_indices_, :]  # 形状变为 (6, n_samples)
 
-            # 2. 将被标记为伪迹的成分置零 (通过广播乘法)
-            # self.zeroing_vector_[:, np.newaxis] 将 (n_components,) 向量变为 (n_components, 1)
-            # 这样它就可以和 (n_components, n_samples) 的 ica_sources 矩阵相乘
+            # --- 2. 处理：对6通道的EEG数据进行ICA清理 (这部分逻辑不变) ---
+            ica_sources = self.unmixing_matrix_ @ eeg_data
             ica_sources *= self.zeroing_vector_[:, np.newaxis]
+            cleaned_eeg_data = self.mixing_matrix_ @ ica_sources  # 形状仍为 (6, n_samples)
 
-            # 3. 将干净的成分重构回信号空间 (cleaned = M * sources)
-            # self.mixing_matrix_: (n_channels, n_components)
-            cleaned_chunk = self.mixing_matrix_ @ ica_sources
+            # --- 3. 合并：创建一个新的8通道数据块，并将清理后的EEG和原始的EOG数据放回原位 ---
+            # 创建一个和原始数据块形状一样、内容全为零的数组
+            reconstructed_chunk = np.zeros_like(data_chunk)
 
-            return cleaned_chunk
+            # 将清理过的EEG数据放回它们原来的位置
+            reconstructed_chunk[self.eeg_indices_, :] = cleaned_eeg_data
+
+            # 将原始的EOG数据原封不动地放回它们原来的位置
+            if self.eog_indices_ is not None and len(self.eog_indices_) > 0:
+                reconstructed_chunk[self.eog_indices_, :] = data_chunk[self.eog_indices_, :]
+
+            return reconstructed_chunk
 
         except Exception as e:
+            # 错误处理逻辑保持不变
             print(f"Error during matrix-based ICA cleaning: {e}. Disabling ICA.")
             self.ica_enabled = False
-            # 发生错误时，禁用ICA并返回原始数据块以保证程序继续运行
             self.unmixing_matrix_ = None
-            self.mixing_matrix_ = None
             return data_chunk
 
     @pyqtSlot(bool)
@@ -234,31 +240,35 @@ class DataProcessor(QObject):
     @pyqtSlot(object, list)
     def set_ica_parameters(self, model, bad_indices):
         """
-        接收训练好的ICA模型和坏道索引，并预先计算用于实时处理的矩阵，以实现最高性能。
+        接收训练好的ICA模型和坏道索引，并预先计算用于实时处理的矩阵和通道索引。
         """
         print(f"DataProcessor received ICA model. Bad components: {bad_indices}")
-        self.ica_model = model  # 仍然保留对原始模型的引用
+        self.ica_model = model
         self.ica_bad_indices = bad_indices
 
-        # --- 性能优化：预计算矩阵 ---
         if self.ica_model is not None:
-            # 获取分解矩阵 (将信号转换为独立成分)
+            # --- 1. 获取EEG和EOG通道的索引 ---
+            # MNE模型中保存了它训练时使用的通道信息
+            # model.ch_names 是所有通道的列表，例如 ['EOG_V', 'EOG_H', 'CH 3', ...]
+            # model.info['bads'] 在这里通常为空，但 model.info['projs'] 等信息可用
+            # 一个更稳健的方法是直接从模型的信息中挑选出 'eeg' 和 'eog' 通道
+            self.eeg_indices_ = pick_types(self.ica_model.info, eeg=True, eog=False, exclude=[])
+            self.eog_indices_ = pick_types(self.ica_model.info, eeg=False, eog=True, exclude=[])
+            print(f"Info: Identified EEG indices: {self.eeg_indices_}")
+            print(f"Info: Identified EOG indices: {self.eog_indices_}")
+
+            # --- 2. 预计算矩阵 (这部分不变) ---
             self.unmixing_matrix_ = self.ica_model.unmixing_matrix_
-
-            # 获取混合矩阵 (将独立成分重构为信号)
             self.mixing_matrix_ = self.ica_model.mixing_matrix_
-
-            # 创建一个“置零向量”，用于快速剔除坏道成分
-            # 创建一个全为1的向量
             self.zeroing_vector_ = np.ones(self.ica_model.n_components_)
-            # 将坏道索引对应位置的元素设为0
             self.zeroing_vector_[bad_indices] = 0
             print("Info: Pre-calculated ICA matrices for real-time cleaning.")
         else:
-            # 如果模型被移除，则清空矩阵
             self.unmixing_matrix_ = None
             self.mixing_matrix_ = None
             self.zeroing_vector_ = None
+            self.eeg_indices_ = None
+            self.eog_indices_ = None
 
     @pyqtSlot(bool, float)
     def update_notch_filter(self, enabled, freq):
