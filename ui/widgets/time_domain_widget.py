@@ -92,7 +92,8 @@ class TimeDomainWidget(QWidget):
         view = pg.GraphicsLayoutWidget()
         self.stacked_plot = view.addPlot(row=0, col=0)
 
-        self.stacked_plot.setDownsampling(mode='peak')
+        #self.stacked_plot.setDownsampling(mode='peak')
+        self.stacked_plot.setDownsampling(False)
         self.stacked_plot.setClipToView(True)
 
         self.stacked_plot.setLabel('bottom', 'Time', units='s')
@@ -122,7 +123,8 @@ class TimeDomainWidget(QWidget):
         # Create all 8 PlotItems once and store them
         for i in range(NUM_CHANNELS):
             p = pg.PlotItem()
-            p.setDownsampling(mode='peak')
+            #p.setDownsampling(mode='peak')
+            p.setDownsampling(False)
             p.setClipToView(True)
             #p.getAxis('bottom').setPen(pg.mkPen(color='#DCDCDC', width=1))
             p.showGrid(x=True, y=True, alpha=0.3)
