@@ -9,27 +9,31 @@ CMD_STOP = b'STOP_EEG'
 
 # 与其他接收器相同的常量
 PACKET_HEADER = b'\xaa\xbb\xcc\xdd'
-NUM_CHANNELS = 8
-V_REF = 4.5
-GAIN = 24.0
-LSB_TO_UV = (V_REF / GAIN / (2 ** 23 - 1)) * 1e6
+#NUM_CHANNELS = 8
+# V_REF = 4.5
+# GAIN = 24.0
+# LSB_TO_UV = (V_REF / GAIN / (2 ** 23 - 1)) * 1e6
 
 
 class SerialDataReceiver(QObject):
-    # --- 信号定义 (与其他接收器完全相同) ---
+    # --- 信号定义 ---
     connection_status = pyqtSignal(str)
     raw_data_received = pyqtSignal(np.ndarray)
 
-    def __init__(self, port, baudrate):
+    def __init__(self, port, baudrate, num_channels, frame_size, v_ref, gain):
         super().__init__()
         self.port = port
         self.baudrate = baudrate
         self._is_running = False
         self.ser = None
 
+        self.num_channels = num_channels
+        self.frame_size = frame_size
+        self.lsb_to_uv = (v_ref / gain / (2 ** 23 - 1)) * 1e6
+
         # --- 数据包处理相关的实例属性 ---
         self.num_frames_per_packet = 50  # 默认值，与硬件匹配
-        self.frame_size = 27
+        # self.frame_size = 27
         self.packet_size = 4 + (self.frame_size * self.num_frames_per_packet)
         self.buffer = bytearray()
 
@@ -41,16 +45,23 @@ class SerialDataReceiver(QObject):
         print(f"Serial Receiver: Frames per packet set to {self.num_frames_per_packet}")
 
     def _parse_packet_vectorized(self, payload):
-        """与另外两个接收器完全相同的解析函数"""
+        """这个函数现在完全依赖于实例变量，因此是动态的"""
         frames = np.frombuffer(payload, dtype=np.uint8).reshape((self.num_frames_per_packet, self.frame_size))
+
+        # 假设状态字节总是3个
         channel_data = frames[:, 3:]
-        reshaped_data = channel_data.reshape((self.num_frames_per_packet, NUM_CHANNELS, 3))
+
+        # reshape 会根据 self.num_channels 自动调整
+        reshaped_data = channel_data.reshape((self.num_frames_per_packet, self.num_channels, 3))
+
         b1, b2, b3 = reshaped_data[:, :, 0].astype(np.int32), reshaped_data[:, :, 1].astype(np.int32), reshaped_data[:,
                                                                                                        :, 2].astype(
             np.int32)
         raw_vals = (b1 << 16) | (b2 << 8) | b3
         raw_vals[raw_vals >= 0x800000] -= 0x1000000
-        return (raw_vals * LSB_TO_UV).astype(np.float32).T
+
+        # 使用在 __init__ 中计算好的转换因子
+        return (raw_vals * self.lsb_to_uv).astype(np.float32).T
 
     @pyqtSlot()
     def run(self):

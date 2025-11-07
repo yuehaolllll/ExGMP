@@ -116,6 +116,7 @@ class FileLoader(QObject):
 class MainWindow(QMainWindow):
     sample_rate_changed = pyqtSignal(int)
     frames_per_packet_changed = pyqtSignal(int)
+    num_channels_changed = pyqtSignal(int)
 
     def __init__(self):
         super().__init__()
@@ -275,7 +276,7 @@ class MainWindow(QMainWindow):
         settings_menu = menu_bar.addMenu("Settings")
 
         # 创建我们的自定义设置面板实例
-        self.settings_panel = SettingsPanel(default_rate=1000, default_frames=50)
+        self.settings_panel = SettingsPanel(default_rate=1000, default_frames=50, default_channels=8)
 
         # 创建一个 QWidgetAction
         widget_action = QWidgetAction(self)
@@ -289,6 +290,7 @@ class MainWindow(QMainWindow):
         # 注意：这里的信号是 self.settings_panel 发出的，而不是旧的 QActionGroup
         self.settings_panel.sample_rate_changed.connect(self._on_sample_rate_changed)
         self.settings_panel.frames_per_packet_changed.connect(self._on_frames_changed)
+        self.settings_panel.num_channels_changed.connect(self._on_num_channels_changed)
 
         tools_menu = menu_bar.addMenu("Tools")
         self.tools_panel = ToolsPanel(self)
@@ -352,7 +354,7 @@ class MainWindow(QMainWindow):
         # DataProcessor -> UI
         self.data_processor.recording_finished.connect(self.save_recording_data)
         self.data_processor.time_data_ready.connect(self.time_domain_widget.update_plot)
-        self.data_processor.fft_data_ready.connect(self.freq_domain_widget.update_fft)
+        self.data_processor.fft_data_ready.connect(self.freq_domain_widget.update_realtime_fft)
         self.data_processor.stats_ready.connect(self.control_panel.update_stats)
         self.data_processor.marker_added_live.connect(self.time_domain_widget.show_live_marker)
         self.data_processor.band_power_ready.connect(self.band_power_widget.update_plot)
@@ -377,6 +379,17 @@ class MainWindow(QMainWindow):
         self.acquisition_controller.stop_recording_signal.connect(self.data_processor.stop_recording)
         self.acquisition_controller.add_marker_signal.connect(self.data_processor.add_marker)
         self.data_processor.filtered_data_ready.connect(self.eog_model_controller.process_data_chunk)
+
+        self.num_channels_changed.connect(self.control_panel.reconfigure_channels)
+        self.num_channels_changed.connect(self.time_domain_widget.reconfigure_channels)
+        self.num_channels_changed.connect(self.freq_domain_widget.reconfigure_channels)
+        #self.num_channels_changed.connect(self.band_power_widget.reconfigure_channels)
+        self.num_channels_changed.connect(self.data_processor.set_num_channels)
+
+    @pyqtSlot(int)
+    def _on_num_channels_changed(self, num_channels):
+        print(f"MainWindow: Detected channel count change to {num_channels}. Broadcasting...")
+        self.num_channels_changed.emit(num_channels)
 
     @pyqtSlot(str, dict)  # 明确指定接收的参数类型
     def on_connect_clicked(self, conn_type, params):
@@ -423,6 +436,15 @@ class MainWindow(QMainWindow):
                 self.review_dialog = ReviewDialog(self)
             self.review_dialog.load_and_display(result)
 
+            if self.is_session_running:
+                # 从 SettingsPanel 获取当前会话的真实通道数
+                current_session_channels = self.settings_panel.get_current_channels()  # 您可能需要为SettingsPanel添加这个方法
+
+                print(f"Restoring FrequencyDomainWidget to {current_session_channels} channels after file review.")
+
+                # 强制重新配置频域图，使其与 DataProcessor 的状态再次同步
+                self.freq_domain_widget.reconfigure_channels(current_session_channels)
+
         # # 无论加载成功与否，都要根据 self.is_session_running 恢复状态栏
         # if self.is_session_running:
         #     # 如果会话仍在运行，则将状态恢复为 "Connected"
@@ -436,19 +458,31 @@ class MainWindow(QMainWindow):
 
     def start_session(self, conn_type, address=None, params=None):
         if self.is_session_running: return
-        self.time_domain_widget.clear_plots();
-        self.freq_domain_widget.clear_plots();
+        current_channels = self.settings_panel.channels_button_group.checkedId()
+        self.time_domain_widget.reconfigure_channels(current_channels)
+        self.freq_domain_widget.reconfigure_channels(current_channels)
         self.band_power_widget.clear_plots()
 
+        current_channels = self.settings_panel.channels_button_group.checkedId()
+        frame_size = 3 + (current_channels * 3)
+        # 假设转换常量固定 (如果不同设备不同, 也应加入设置)
+        V_REF = 4.5
+        GAIN = 24.0
+
         if conn_type == "WiFi":
-            self.receiver_instance = DataReceiver()
+            self.receiver_instance = DataReceiver(
+                num_channels=current_channels, frame_size=frame_size, v_ref=V_REF, gain=GAIN
+            )
         elif conn_type == "Bluetooth":
-            self.receiver_instance = BluetoothDataReceiver(address)
+            self.receiver_instance = BluetoothDataReceiver(
+                device_address=address, num_channels=current_channels, frame_size=frame_size, v_ref=V_REF, gain=GAIN
+            )
         elif conn_type == "Serial (UART)":
             if not params:
                 print("Error: Serial connection requires parameters.")
                 return
-            self.receiver_instance = SerialDataReceiver(port=params["port"], baudrate=params["baudrate"])
+            self.receiver_instance = SerialDataReceiver(port=params["port"], baudrate=params["baudrate"],
+                                                        num_channels=current_channels, frame_size=frame_size, v_ref=V_REF, gain=GAIN)
         else:
             return
 
@@ -477,7 +511,7 @@ class MainWindow(QMainWindow):
         此方法经过重新设计，可以安全地多次调用。
         :param blocking: 如果为True，将阻塞并等待线程完全结束。
         """
-        # 关键修复：移除了 'if not self.is_session_running: return'
+        # 移除了 'if not self.is_session_running: return'
         # 确保即使用户先点击断开再关闭窗口，清理逻辑也能在 closeEvent 中完整执行。
 
         # 仅在会话首次停止时打印消息，避免重复输出
@@ -553,6 +587,13 @@ class MainWindow(QMainWindow):
                 self.stop_session()
             else:
                 self.update_ui_on_connection(False)
+
+    @pyqtSlot(int)
+    def _on_num_channels_changed(self, num_channels):
+        """当设置面板中的通道数改变时调用"""
+        print(f"Menu Event: Number of channels changed to {num_channels}.")
+        # 发射主信号，通知所有订阅者
+        self.num_channels_changed.emit(num_channels)
 
     def update_ui_on_connection(self, is_connected):
         self.is_session_running = is_connected

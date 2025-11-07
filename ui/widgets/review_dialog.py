@@ -36,7 +36,7 @@ class ReviewDialog(QDialog):
             channel_names
         )
         # Use the static display methods of the plot widgets
-        self.frequency_domain_widget.update_fft(result_dict['freqs'], result_dict['mags'], channel_names )
+        self.frequency_domain_widget.display_static_fft(result_dict['freqs'], result_dict['mags'], channel_names )
 
         # Update the window title to show the filename
         self.setWindowTitle(f"Reviewing: {result_dict['filename']}")

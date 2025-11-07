@@ -13,11 +13,8 @@ except ImportError:
     create_info, RawArray = None, None
 
 # --- 常量 ---
-#SAMPLING_RATE = 2000
-NUM_CHANNELS = 8
 FFT_UPDATE_RATE = 4
 FFT_WINDOW_SECONDS = 1
-#FFT_SAMPLES = int(SAMPLING_RATE * FFT_WINDOW_SECONDS)
 DOWNSAMPLE_FACTOR = 10
 PROCESSING_INTERVAL_MS = 100
 BANDS = {
@@ -42,6 +39,7 @@ class DataProcessor(QObject):
         self.raw_data_buffer = collections.deque()
         self.processing_timer = None
         self.sampling_rate = 1000  # 默认值
+        self.num_channels = 8
         self.fft_samples = int(self.sampling_rate * FFT_WINDOW_SECONDS)
         self.fft_data_buffer = collections.deque(maxlen=self.fft_samples)
         self.packet_counter = 0
@@ -51,11 +49,15 @@ class DataProcessor(QObject):
         self.markers = {'timestamps': [], 'labels': []}
         self.total_recorded_samples = 0
         self.filter_b, self.filter_a, self.filter_zi = None, None, None
-        self.update_filter_settings(0, 100.0)
+        #self.update_filter_settings(0, 100.0)
         self.notch_enabled = False
         self.notch_b, self.notch_a, self.notch_zi = None, None, None
-        self.update_notch_filter(False, 50.0)
-        self.channel_names = [f'CH {i + 1}' for i in range(NUM_CHANNELS)]
+        self.current_hp = 0.0  # 保存当前滤波器设置以便重新计算
+        self.current_lp = 100.0
+        self.current_notch_freq = 50.0
+        #self.update_notch_filter(False, 50.0)
+        self.channel_names = []  # 将在 set_num_channels 中初始化
+        self.set_num_channels(self.num_channels)  # 执行第一次初始化
 
         self.calibration_timer = None
 
@@ -68,10 +70,24 @@ class DataProcessor(QObject):
         self.ica_bad_indices = []
         self.ica_enabled = False
 
+    @pyqtSlot(int)
+    def set_num_channels(self, num_channels):
+        """
+        核心槽函数：设置新的通道数并重置所有依赖于它的状态。
+        """
+        print(f"DataProcessor: Setting number of channels to {num_channels}.")
+        self.num_channels = num_channels
+        self.channel_names = [f'CH {i + 1}' for i in range(self.num_channels)]
+
+        # 滤波器状态的维度依赖于通道数，必须用新维度重置
+        # 我们通过重新应用当前保存的滤波器设置来达到这个目的。
+        self.update_filter_settings(self.current_hp, self.current_lp)
+        self.update_notch_filter(self.notch_enabled, self.current_notch_freq)
+
     @pyqtSlot(list)
     def set_channel_names(self, names):
         """从主窗口接收更新后的通道名称列表"""
-        if len(names) == NUM_CHANNELS:
+        if len(names) == self.num_channels:
             self.channel_names = names
 
     @pyqtSlot(int, str)
@@ -99,12 +115,15 @@ class DataProcessor(QObject):
         # 一个更稳健的方法是让 ControlPanel 在发射 sample_rate_changed 后，
         # 立即再次发射 filter_settings_changed 和 notch_filter_changed。
         # 这里我们先手动重新配置。
-        # (注意：这部分逻辑的稳健性取决于您希望如何交互)
-        self.update_filter_settings(0, 100.0)  # 重新应用默认值或当前UI值
-        self.update_notch_filter(False, 50.0)
+        self.update_filter_settings(self.current_hp, self.current_lp)
+        self.update_notch_filter(self.notch_enabled, self.current_notch_freq)
 
     @pyqtSlot(np.ndarray)
     def process_raw_data(self, data_chunk):
+        if data_chunk.shape[0] != self.num_channels:
+            print(
+                f"Warning (Processor): Received data with {data_chunk.shape[0]} channels, but processor is configured for {self.num_channels}. Ignoring chunk.")
+            return
         self.raw_data_buffer.append(data_chunk)
 
     def _process_buffered_data(self):
@@ -273,6 +292,7 @@ class DataProcessor(QObject):
     @pyqtSlot(bool, float)
     def update_notch_filter(self, enabled, freq):
         self.notch_enabled = enabled
+        self.current_notch_freq = freq
         if not enabled:
             self.notch_b, self.notch_a, self.notch_zi = None, None, None
             print("Info: Notch filter disabled.")
@@ -280,7 +300,7 @@ class DataProcessor(QObject):
         Q = 30.0
         self.notch_b, self.notch_a = signal.iirnotch(freq, Q, fs=self.sampling_rate)
         zi = signal.lfilter_zi(self.notch_b, self.notch_a)
-        self.notch_zi = np.tile(zi, (NUM_CHANNELS, 1))
+        self.notch_zi = np.tile(zi, (self.num_channels, 1))
         print(f"Info: Notch filter enabled at {freq} Hz.")
 
     def calculate_fft(self):
@@ -330,9 +350,11 @@ class DataProcessor(QObject):
         }
         self.recording_finished.emit(data_to_save)
 
-    # --- (update_filter_settings 保持不变) ---
     @pyqtSlot(float, float)
     def update_filter_settings(self, high_pass, low_pass):
+
+        self.current_hp = high_pass
+        self.current_lp = low_pass
         nyquist = 0.5 * self.sampling_rate
         # 允许高通为0，此时为低通滤波
         if high_pass < 0 or low_pass <= high_pass or low_pass >= nyquist:
@@ -347,9 +369,9 @@ class DataProcessor(QObject):
                                                          fs=self.sampling_rate)
             print(f"Info: Band-pass filter updated to {high_pass}-{low_pass} Hz.")
         zi = signal.lfilter_zi(self.filter_b, self.filter_a)
-        self.filter_zi = np.tile(zi, (NUM_CHANNELS, 1))
+        self.filter_zi = np.tile(zi, (self.num_channels, 1))
 
-    # --- 关键修复 1：修复 add_marker 中的变量名错误 ---
+    # --- 修复 add_marker 中的变量名错误 ---
     @pyqtSlot(str)
     def add_marker(self, label):
         if self.is_recording:

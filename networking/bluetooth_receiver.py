@@ -6,55 +6,53 @@ from bleak import BleakClient, BleakScanner
 # --- 常量 ---
 # 这些值应该与您的STM32设备匹配
 NOTIFY_CHARACTERISTIC_UUID = "0000fff1-0000-1000-8000-00805f9b34fb"
-# 注意：默认值设为10，与STM32匹配。可以通过Settings菜单更改。
+# 默认值设为10，与STM32匹配。可以通过Settings菜单更改。
 DEFAULT_FRAMES_PER_PACKET = 10
 FRAME_SIZE = 27
 PACKET_HEADER = b'\xaa\xbb\xcc\xdd'
 NUM_CHANNELS = 8
-# 从您的 DataReceiver 复制过来的转换常量
 V_REF = 4.5
 GAIN = 24.0
 LSB_TO_UV = (V_REF / GAIN / (2 ** 23 - 1)) * 1e6
 
 
 class BluetoothDataReceiver(QObject):
-    # --- 信号定义 (与 DataReceiver 完全相同) ---
+    # --- 信号定义 ---
     connection_status = pyqtSignal(str)
     raw_data_received = pyqtSignal(np.ndarray)
 
-    def __init__(self, device_address):
+    def __init__(self, device_address, num_channels, frame_size, v_ref, gain):
         super().__init__()
         self.address = device_address
         self._is_running = False
         self.client = None
 
-        # --- 数据包处理相关的实例属性 ---
-        self.num_frames_per_packet = DEFAULT_FRAMES_PER_PACKET
-        self.packet_size = 4 + (FRAME_SIZE * self.num_frames_per_packet)
+        self.num_channels = num_channels
+        self.frame_size = frame_size
+        self.lsb_to_uv = (v_ref / gain / (2 ** 23 - 1)) * 1e6
+
+        self.num_frames_per_packet = 10  # 蓝牙通常用较小的包
+        self.packet_size = 4 + (self.frame_size * self.num_frames_per_packet)
         self.buffer = bytearray()
 
-    # --- 槽函数 (与 DataReceiver 相同) ---
+    # --- 槽函数 ---
     @pyqtSlot(int)
     def set_frames_per_packet(self, frames):
-        """动态更新每包的帧数和包大小"""
         self.num_frames_per_packet = frames
-        self.packet_size = 4 + (FRAME_SIZE * self.num_frames_per_packet)
+        self.packet_size = 4 + (self.frame_size * self.num_frames_per_packet)
         print(f"Bluetooth Receiver: Frames per packet set to {self.num_frames_per_packet}")
 
-    # --- 解析函数 (从 DataReceiver 复制并适配) ---
+    # --- 解析函数 ---
     def _parse_packet_vectorized(self, payload):
-        frames = np.frombuffer(payload, dtype=np.uint8).reshape((self.num_frames_per_packet, 27))
+        frames = np.frombuffer(payload, dtype=np.uint8).reshape((self.num_frames_per_packet, self.frame_size))
         channel_data = frames[:, 3:]
-        reshaped_data = channel_data.reshape((self.num_frames_per_packet, NUM_CHANNELS, 3))
-        b1 = reshaped_data[:, :, 0].astype(np.int32)
-        b2 = reshaped_data[:, :, 1].astype(np.int32)
-        b3 = reshaped_data[:, :, 2].astype(np.int32)
+        reshaped_data = channel_data.reshape((self.num_frames_per_packet, self.num_channels, 3))
+        b1, b2, b3 = reshaped_data[:, :, 0].astype(np.int32), reshaped_data[:, :, 1].astype(np.int32), reshaped_data[:, :, 2].astype(np.int32)
         raw_vals = (b1 << 16) | (b2 << 8) | b3
         raw_vals[raw_vals >= 0x800000] -= 0x1000000
-        return (raw_vals * LSB_TO_UV).astype(np.float32).T
+        return (raw_vals * self.lsb_to_uv).astype(np.float32).T
 
     # --- 蓝牙核心逻辑 ---
-
     def _notification_handler(self, sender, data: bytearray):
         """
         当收到蓝牙数据时，此回调函数被 bleak 内部的事件循环调用。

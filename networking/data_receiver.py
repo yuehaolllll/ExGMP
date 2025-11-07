@@ -15,19 +15,21 @@ class DataReceiver(QObject):
     connection_status = pyqtSignal(str)
     raw_data_received = pyqtSignal(np.ndarray) # 发射原始解析数据
 
-    def __init__(self):
+    def __init__(self, num_channels, frame_size, v_ref, gain):
         super().__init__()
         self.sock = None
         self._is_running = False
-        self.num_frames_per_packet = 50  # 默认值
-        self.packet_size = 4 + (27 * self.num_frames_per_packet)
+        self.num_channels = num_channels
+        self.frame_size = frame_size
+        self.lsb_to_uv = (v_ref / gain / (2 ** 23 - 1)) * 1e6
+
+        self.num_frames_per_packet = 50
+        self.packet_size = 4 + (self.frame_size * self.num_frames_per_packet)
 
     @pyqtSlot(int)
     def set_frames_per_packet(self, frames):
-        """动态更新每包的帧数和包大小"""
         self.num_frames_per_packet = frames
-        # 这里的 27 是每个通道的数据字节数，与 __init__ 中保持一致
-        self.packet_size = 4 + (27 * self.num_frames_per_packet)
+        self.packet_size = 4 + (self.frame_size * self.num_frames_per_packet)
         print(f"WiFi Receiver: Frames per packet set to {self.num_frames_per_packet}")
 
     def _recv_all(self, n):
@@ -38,14 +40,14 @@ class DataReceiver(QObject):
             buffer.extend(packet)
         return buffer
 
-    def _parse_packet_vectorized(self, payload):
-        frames = np.frombuffer(payload, dtype=np.uint8).reshape((self.num_frames_per_packet, 27))
+    def _parse_packet_vectorized(self, payload): # <-- 核心修改
+        frames = np.frombuffer(payload, dtype=np.uint8).reshape((self.num_frames_per_packet, self.frame_size))
         channel_data = frames[:, 3:]
-        reshaped_data = channel_data.reshape((self.num_frames_per_packet, NUM_CHANNELS, 3))
+        reshaped_data = channel_data.reshape((self.num_frames_per_packet, self.num_channels, 3))
         b1, b2, b3 = reshaped_data[:, :, 0].astype(np.int32), reshaped_data[:, :, 1].astype(np.int32), reshaped_data[:, :, 2].astype(np.int32)
         raw_vals = (b1 << 16) | (b2 << 8) | b3
         raw_vals[raw_vals >= 0x800000] -= 0x1000000
-        return (raw_vals * LSB_TO_UV).astype(np.float32).T
+        return (raw_vals * self.lsb_to_uv).astype(np.float32).T
 
     @pyqtSlot()
     def run(self):

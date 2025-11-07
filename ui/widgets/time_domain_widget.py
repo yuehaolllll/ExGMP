@@ -13,11 +13,6 @@ class PlotMode(Enum):
     INDIVIDUAL = 1
     STACKED = 2
 
-# --- 常量 ---
-NUM_CHANNELS = 8
-#SAMPLING_RATE = 2000
-DOWNSAMPLE_FACTOR = 10
-
 PLOT_COLORS = [
     "#007BFF",  # Blue
     "#28A745",  # Green
@@ -27,6 +22,8 @@ PLOT_COLORS = [
     "#6F42C1",  # Purple
     "#343A40",  # Dark Gray
     "#E83E8C",  # Pink
+    "#6610f2",
+    "#20c997"
 ]
 
 CHANNEL_HEIGHT = 1.0
@@ -35,35 +32,33 @@ class TimeDomainWidget(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
 
-        # --- 状态管理 ---
+        # --- 1. 初始化所有实例变量 (状态管理) ---
         self.is_review_mode = False
         self.static_data = None
         self.static_time_vector = None
         self.current_mode = PlotMode.STACKED
         self.plot_seconds = 5
-        self.sampling_rate = 1000  # 默认值
-        self.plot_window_samples = int(self.sampling_rate * self.plot_seconds)
-        self.individual_scales = [200.0] * NUM_CHANNELS
-        self.stacked_view_scale = 200.0
+        self.sampling_rate = 1000
+        self.num_channels = 8  # 默认值
         self._is_updating_stacked_range = False
-        self.data_buffers = [
-            collections.deque(np.zeros(self.plot_window_samples), maxlen=self.plot_window_samples)
-            for _ in range(NUM_CHANNELS)
-        ]
         self.marker_lines, self.temp_marker_lines = [], []
+        self.stacked_view_scale = 200.0
 
-        # --- UI 布局 ---
+        # 将所有动态列表初始化为空
+        self.individual_scales = []
+        self.data_buffers = []
+        self.stacked_curves, self.stacked_labels = [], []
+        self.individual_plots, self.individual_curves = [], []
+
+        # --- 2. 构建基础UI框架 ---
         main_layout = QVBoxLayout(self)
         main_layout.setContentsMargins(0, 0, 0, 0)
         main_layout.setSpacing(5)
 
         button_bar_layout = QHBoxLayout()
-
-        # 切换视图
         self.switch_button = QPushButton("Switch to Individual View")
         self.switch_button.setFixedWidth(180)
         self.switch_button.clicked.connect(self._toggle_plot_mode)
-
         button_bar_layout.addStretch()
         button_bar_layout.addWidget(self.switch_button)
         main_layout.addLayout(button_bar_layout)
@@ -71,15 +66,52 @@ class TimeDomainWidget(QWidget):
         self.plot_stack = pg.QtWidgets.QStackedWidget()
         main_layout.addWidget(self.plot_stack)
 
-        # --- 创建两个独立的 GraphicsLayoutWidget 实例 ---
+        # --- 3. 在 __init__ 的最后，调用一次 reconfigure_channels 来完成所有UI的创建 ---
+        self.reconfigure_channels(self.num_channels)
+
+    @pyqtSlot(int)
+    def reconfigure_channels(self, num_channels):
+        """
+        核心方法：清空并根据新的通道数重建所有绘图组件和数据缓冲区。
+        """
+        # 如果通道数未改变且UI已构建，则不操作
+        if self.num_channels == num_channels and hasattr(self, 'stacked_curves') and self.stacked_curves:
+            return
+
+        self._is_reconfiguring = True
+
+        print(f"TimeDomainWidget: Reconfiguring UI for {num_channels} channels.")
+        self.num_channels = num_channels
+
+        # 1. 重置与通道数相关的状态和数据缓冲区
+        self.plot_window_samples = int(self.sampling_rate * self.plot_seconds)
+        self.individual_scales = [200.0] * num_channels
+        self.data_buffers = [
+            collections.deque(np.zeros(self.plot_window_samples), maxlen=self.plot_window_samples)
+            for _ in range(num_channels)
+        ]
+
+        # 2. 清理旧的绘图组件
+        # 安全地从 QStackedWidget 中移除并删除旧的 GraphicsLayoutWidgets
+        while self.plot_stack.count() > 0:
+            widget_to_remove = self.plot_stack.widget(0)
+            self.plot_stack.removeWidget(widget_to_remove)
+            widget_to_remove.deleteLater()  # 非常重要，确保 C++ 对象被正确销毁
+
+        # 3. 重新创建两个视图的 GraphicsLayoutWidget 实例
         self.stacked_view = self._create_stacked_view()
         self.individual_view = self._create_individual_view()
 
+        # 4. 将新创建的视图添加到 QStackedWidget 中
         self.plot_stack.addWidget(self.stacked_view)
         self.plot_stack.addWidget(self.individual_view)
 
+        # 5. 最后，更新布局和视图模式
         self._update_individual_view_layout()
-        self._set_plot_mode(self.current_mode)
+        self._set_plot_mode(self.current_mode)  # 恢复当前视图模式
+
+        self._is_reconfiguring = False
+        self._redraw_all_channels()
 
     @pyqtSlot(int)
     def set_sample_rate(self, new_rate):
@@ -101,16 +133,18 @@ class TimeDomainWidget(QWidget):
         self.stacked_plot.showGrid(x=True, y=True, alpha=0.4)
         self.stacked_plot.getViewBox().setMouseEnabled(y=True)
         self.stacked_plot.getViewBox().sigYRangeChanged.connect(self._on_stacked_y_range_changed)
-        self._update_stacked_y_range()
         self.stacked_curves, self.stacked_labels = [], []
-        for i in range(NUM_CHANNELS):
-            offset = (NUM_CHANNELS - 1 - i) * CHANNEL_HEIGHT
-            curve = self.stacked_plot.plot(pen=pg.mkPen(color=PLOT_COLORS[i], width=1.5))
-            label = pg.TextItem(f"CH {i+1}", color=PLOT_COLORS[i], anchor=(0, 0.5))
+        for i in range(self.num_channels):
+            offset = (self.num_channels - 1 - i) * CHANNEL_HEIGHT
+            # 从 PLOT_COLORS 中循环取色，防止通道数超过颜色数时崩溃
+            color = PLOT_COLORS[i % len(PLOT_COLORS)]
+            curve = self.stacked_plot.plot(pen=pg.mkPen(color=color, width=1.5))
+            label = pg.TextItem(f"CH {i + 1}", color=color, anchor=(0, 0.5))
             label.setPos(-0.05 * self.plot_seconds, offset)
             self.stacked_plot.addItem(label)
             self.stacked_curves.append(curve)
             self.stacked_labels.append(label)
+        self._update_stacked_y_range()
         return view
 
     def _create_individual_view(self):
@@ -121,18 +155,17 @@ class TimeDomainWidget(QWidget):
         self.individual_curves = []
 
         # Create all 8 PlotItems once and store them
-        for i in range(NUM_CHANNELS):
+        for i in range(self.num_channels):
             p = pg.PlotItem()
-            #p.setDownsampling(mode='peak')
-            p.setDownsampling(False)
+            p.setDownsampling(mode='peak')
             p.setClipToView(True)
-            #p.getAxis('bottom').setPen(pg.mkPen(color='#DCDCDC', width=1))
             p.showGrid(x=True, y=True, alpha=0.3)
             p.setYRange(-self.individual_scales[i], self.individual_scales[i])
-            p.getViewBox().setMouseEnabled(x=True, y=True)  # Enable mouse for both axes
+            p.getViewBox().setMouseEnabled(x=True, y=True)
             p.getViewBox().sigYRangeChanged.connect(partial(self._on_individual_y_range_changed, i))
 
-            curve = p.plot(pen=pg.mkPen(color=PLOT_COLORS[i], width=1.5))
+            color = PLOT_COLORS[i % len(PLOT_COLORS)]
+            curve = p.plot(pen=pg.mkPen(color=color, width=1.5))
 
             self.individual_plots.append(p)
             self.individual_curves.append(curve)
@@ -160,7 +193,6 @@ class TimeDomainWidget(QWidget):
         for i, plot in enumerate(visible_plots):
             channel_index = self.individual_plots.index(plot)
 
-            # --- 核心修改部分 ---
             # 1. 强制解除任何现有的轴联动，确保每个图表的X轴和Y轴都是独立的
             plot.setXLink(None)
             plot.setYLink(None)
@@ -168,7 +200,7 @@ class TimeDomainWidget(QWidget):
             # 2. 重新应用Y轴标签，防止它在布局重建时丢失
             plot.setLabel('left', f"CH {channel_index + 1}", units='µV', color=PLOT_COLORS[channel_index])
 
-            # 3. (修改点) 无条件地为每一个可见的图表显示其独立的X轴
+            # 3. 无条件地为每一个可见的图表显示其独立的X轴
             plot.showAxis('bottom')
             plot.setLabel('bottom', 'Time', units='s')
 
@@ -183,24 +215,19 @@ class TimeDomainWidget(QWidget):
             layout.addItem(plot, row=i, col=0)
 
     def _update_stacked_y_range(self):
-        """根据当前的 stacked_view_scale 来更新Y轴的可见范围"""
-        if self._is_updating_stacked_range: return
+        if self._is_updating_stacked_range or not hasattr(self, 'stacked_plot'): return
         self._is_updating_stacked_range = True
-
-        # 计算总高度，使其与缩放因子成反比
-        # 缩放因子越小 (信号放大)，总高度越大
-        total_height = NUM_CHANNELS * CHANNEL_HEIGHT * (200.0 / self.stacked_view_scale)
-        self.stacked_plot.setYRange(-total_height / NUM_CHANNELS, total_height)
-
+        total_height = self.num_channels * CHANNEL_HEIGHT * (200.0 / self.stacked_view_scale)
+        self.stacked_plot.setYRange(-total_height / self.num_channels, total_height)
         self._is_updating_stacked_range = False
 
     def _on_stacked_y_range_changed(self):
-        if self._is_updating_stacked_range: return
+        if self._is_updating_stacked_range or self._is_reconfiguring: return
         self._is_updating_stacked_range = True
         y_range = self.stacked_plot.getViewBox().viewRange()[1]
         visible_height = y_range[1] - y_range[0]
         if abs(visible_height) > 1e-9:
-            self.stacked_view_scale = (NUM_CHANNELS * CHANNEL_HEIGHT * 200.0) / visible_height
+            self.stacked_view_scale = (self.num_channels * CHANNEL_HEIGHT * 200.0) / visible_height
         if not self.is_review_mode: self._redraw_stacked()
         self._is_updating_stacked_range = False
 
@@ -236,46 +263,50 @@ class TimeDomainWidget(QWidget):
         self._redraw_all_channels()
 
     def _redraw_all_channels(self):
+        if self._is_reconfiguring: return
         if self.current_mode == PlotMode.STACKED: self._redraw_stacked()
         else: self._redraw_individual()
 
     def _redraw_stacked(self):
+        if self._is_reconfiguring: return
         if self.is_review_mode:
             if self.static_data is None: return
-            data_source = self.static_data
-            time_vector = self.static_time_vector
+            data_source, time_vector = self.static_data, self.static_time_vector
         else:
-            current_samples = len(self.data_buffers[0])
-            if current_samples == 0: return
+            if not self.data_buffers or not self.data_buffers[0]: return
             data_source = [np.array(buf) for buf in self.data_buffers]
-            # 时间轴现在直接根据真实采样率计算
-            time_vector = np.linspace(0, self.plot_seconds, current_samples)
+            time_vector = np.linspace(0, self.plot_seconds, len(self.data_buffers[0]))
 
         scale = self.stacked_view_scale
         if abs(scale) < 1e-9: scale = 1e-9
-        for i in range(NUM_CHANNELS):
-            offset = (NUM_CHANNELS - 1 - i) * CHANNEL_HEIGHT
+
+        for i in range(self.num_channels):
+            offset = (self.num_channels - 1 - i) * CHANNEL_HEIGHT
             scaled_data = (data_source[i] / scale * CHANNEL_HEIGHT / 2) + offset
             self.stacked_curves[i].setData(x=time_vector, y=scaled_data)
 
     def _redraw_individual(self):
+        if self._is_reconfiguring: return
         if self.is_review_mode:
             if self.static_data is None: return
-            data_source = self.static_data
-            time_vector = self.static_time_vector
+            data_source, time_vector = self.static_data, self.static_time_vector
         else:
-            current_samples = len(self.data_buffers[0])
-            if current_samples == 0: return
+            if not self.data_buffers or not self.data_buffers[0]: return
             data_source = [np.array(buf) for buf in self.data_buffers]
-            # 时间轴现在直接根据真实采样率计算
-            time_vector = np.linspace(0, self.plot_seconds, current_samples)
+            time_vector = np.linspace(0, self.plot_seconds, len(self.data_buffers[0]))
 
-        for i in range(NUM_CHANNELS):
+        for i in range(self.num_channels):
             self.individual_curves[i].setData(x=time_vector, y=data_source[i])
 
     def update_plot(self, data_chunk):
-        if self.is_review_mode: return # 回顾模式下忽略新的实时数据
-        for i in range(NUM_CHANNELS): self.data_buffers[i].extend(data_chunk[i])
+        if self.is_review_mode: return
+        # 防御性检查，确保传入的数据维度和当前UI配置的通道数匹配
+        if data_chunk.shape[0] != self.num_channels:
+            print(
+                f"Warning (TimeDomain): Received data with {data_chunk.shape[0]} channels, but UI is configured for {self.num_channels}. Ignoring chunk.")
+            return
+        for i in range(self.num_channels):
+            self.data_buffers[i].extend(data_chunk[i])
         self._redraw_all_channels()
 
     @pyqtSlot(int, str)
@@ -284,7 +315,7 @@ class TimeDomainWidget(QWidget):
         更新两种视图模式下对应通道的名称。
         """
         # 安全检查，确保 channel 索引有效
-        if 0 <= channel < NUM_CHANNELS:
+        if 0 <= channel < self.num_channels:
 
             # --- 核心修复：操作正确的、用户可见的UI组件 ---
 
@@ -305,7 +336,6 @@ class TimeDomainWidget(QWidget):
     def set_plot_duration(self, seconds):
         if self.is_review_mode: return
 
-        # 不再除以 DOWNSAMPLE_FACTOR
         self.plot_seconds = seconds
         self.plot_window_samples = int(self.sampling_rate * self.plot_seconds)
 
@@ -315,11 +345,11 @@ class TimeDomainWidget(QWidget):
 
         # 更新标签位置
         for i, label in enumerate(self.stacked_labels):
-            offset = (NUM_CHANNELS - 1 - i) * CHANNEL_HEIGHT
+            offset = (self.num_channels - 1 - i) * CHANNEL_HEIGHT
             label.setPos(-0.05 * self.plot_seconds, offset)
 
         # 重建缓冲区以适应新的长度
-        for i in range(NUM_CHANNELS):
+        for i in range(self.num_channels):
             current_data = list(self.data_buffers[i])
             new_buffer = collections.deque(maxlen=self.plot_window_samples)
             new_buffer.extend(current_data)
@@ -329,7 +359,7 @@ class TimeDomainWidget(QWidget):
 
     @pyqtSlot(int, float)
     def adjust_scale(self, channel, new_scale):
-        if 0 <= channel < NUM_CHANNELS:
+        if 0 <= channel < self.num_channels:
             self.individual_scales[channel] = new_scale
             if self.current_mode == PlotMode.INDIVIDUAL:
                 self.individual_plots[channel].setYRange(-new_scale, new_scale)
@@ -364,7 +394,8 @@ class TimeDomainWidget(QWidget):
     def display_static_data(self, data, sampling_rate, markers=None, channel_names=None):
         self.is_review_mode = True
         self.clear_plots(for_static=True)
-        num_samples = data.shape[1]
+        num_channels, num_samples = data.shape
+        self.reconfigure_channels(num_channels)
         duration = num_samples / sampling_rate
         self.static_data = data
         self.static_time_vector = np.arange(num_samples) / sampling_rate
@@ -372,13 +403,13 @@ class TimeDomainWidget(QWidget):
         if max_abs_val < 1e-9: max_abs_val = 200.0
         self.stacked_view_scale = max_abs_val
         self._update_stacked_y_range()
-        for i in range(NUM_CHANNELS):
+        for i in range(self.num_channels):
             self.individual_scales[i] = max_abs_val
             self.individual_plots[i].setYRange(-max_abs_val, max_abs_val)
         self.stacked_plot.setXRange(0, duration, padding=0)
         for p in self.individual_plots: p.setXRange(0, duration, padding=0)
         for i, label in enumerate(self.stacked_labels):
-            offset = (NUM_CHANNELS - 1 - i) * CHANNEL_HEIGHT
+            offset = (self.num_channels - 1 - i) * CHANNEL_HEIGHT
             label.setPos(-0.05 * duration, offset)
         self._redraw_all_channels()
         if channel_names:
@@ -407,7 +438,7 @@ class TimeDomainWidget(QWidget):
             self.static_data = None
             self.static_time_vector = None
             self.set_plot_duration(5)
-            for i in range(NUM_CHANNELS):
+            for i in range(self.num_channels):
                 self.data_buffers[i].clear()
                 self.data_buffers[i].extend(np.zeros(self.plot_window_samples))
             self._redraw_all_channels()
