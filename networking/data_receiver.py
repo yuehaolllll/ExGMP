@@ -8,7 +8,7 @@ PORT = 3333
 NUM_CHANNELS = 8
 PACKET_HEADER = b'\xaa\xbb\xcc\xdd'
 V_REF = 4.5
-GAIN = 24.0
+GAIN = 12.0
 LSB_TO_UV = (V_REF / GAIN / (2**23 - 1)) * 1e6
 
 class DataReceiver(QObject):

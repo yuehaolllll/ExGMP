@@ -26,7 +26,7 @@ class DataProcessor(QObject):
     recording_finished = pyqtSignal([dict], [type(None)])
     time_data_ready = pyqtSignal(np.ndarray)
     fft_data_ready = pyqtSignal(np.ndarray, np.ndarray)
-    stats_ready = pyqtSignal(int)
+    stats_ready = pyqtSignal(int, int)
     marker_added_live = pyqtSignal()
     band_power_ready = pyqtSignal(np.ndarray)
 
@@ -43,6 +43,7 @@ class DataProcessor(QObject):
         self.fft_samples = int(self.sampling_rate * FFT_WINDOW_SECONDS)
         self.fft_data_buffer = collections.deque(maxlen=self.fft_samples)
         self.packet_counter = 0
+        self.byte_counter = 0
         self.fft_timer = None
         self.is_recording = False
         self.recording_buffer = []
@@ -133,6 +134,8 @@ class DataProcessor(QObject):
             all_chunks.append(self.raw_data_buffer.popleft())
         if not all_chunks: return
         large_chunk = np.concatenate(all_chunks, axis=1)
+
+        self.byte_counter += large_chunk.nbytes
 
         # --- 滤波链 ---
         if self.notch_enabled and self.notch_b is not None:
@@ -310,8 +313,9 @@ class DataProcessor(QObject):
         magnitudes = np.abs(np.fft.rfft(windowed_data, axis=1)) / self.fft_samples
         frequencies = np.fft.rfftfreq(self.fft_samples, 1.0 / self.sampling_rate)
         self.fft_data_ready.emit(frequencies, magnitudes)
-        self.stats_ready.emit(self.packet_counter)
+        self.stats_ready.emit(self.packet_counter, self.byte_counter)
         self.packet_counter = 0
+        self.byte_counter = 0
         psd = magnitudes ** 2
         band_powers = []
         for band_name, (low_freq, high_freq) in BANDS.items():

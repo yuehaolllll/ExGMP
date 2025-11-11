@@ -6,9 +6,6 @@ from PyQt6.QtWidgets import (QWidget, QVBoxLayout, QGridLayout, QGroupBox,
                              QSpinBox, QDoubleSpinBox, QComboBox, QButtonGroup, QHBoxLayout)
 from PyQt6.QtCore import pyqtSignal, pyqtSlot
 
-NUM_CHANNELS = 8
-PACKET_SIZE = 1354
-
 
 class ControlPanel(QWidget):
 
@@ -32,7 +29,6 @@ class ControlPanel(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.last_stat_time = time.time()
-        self.y_scales = [200.0] * NUM_CHANNELS
         self.is_connected = False
         self.num_channels = 8
 
@@ -278,18 +274,19 @@ class ControlPanel(QWidget):
             self.pps_lbl.setText("Packets/sec: 0")
             self.kbs_lbl.setText("Data Rate: 0.0 KB/s")
 
-    def update_stats(self, packet_count):
+    @pyqtSlot(int, int)
+    def update_stats(self, packet_count, byte_count):
         # 如果控件不可见（很可能因为窗口正在关闭），则不执行任何操作。
         if not self.isVisible():
             return
 
-        current_time = time.time();
+        current_time = time.time()
         elapsed = current_time - self.last_stat_time
         if elapsed > 0:
             pps = packet_count / elapsed
-            #kbs = (packet_count * PACKET_SIZE) / elapsed / 1024
+            kbs = (byte_count / elapsed) / 1024
             self.pps_lbl.setText(f"Packets/sec: {pps:.1f}")
-            #self.kbs_lbl.setText(f"Data Rate: {kbs:.1f} KB/s")
+            self.kbs_lbl.setText(f"Data Rate: {kbs:.1f} KB/s")
         self.last_stat_time = current_time
 
     def adjust_scale(self, channel, factor):
