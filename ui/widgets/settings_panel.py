@@ -24,7 +24,7 @@ class SettingsPanel(QWidget):
         self.rate_button_group = QButtonGroup(self)
         self.rate_button_group.setExclusive(True)
 
-        rates = [250, 500, 1000, 2000]
+        rates = [250, 500, 1000, 2000, 4000]
         for rate in rates:
             radio_button = QRadioButton(f"{rate} Hz")
             # 将 rate 值与按钮关联

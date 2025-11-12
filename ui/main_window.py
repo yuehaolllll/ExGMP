@@ -467,7 +467,7 @@ class MainWindow(QMainWindow):
         frame_size = 3 + (current_channels * 3)
         # 假设转换常量固定 (如果不同设备不同, 也应加入设置)
         V_REF = 4.5
-        GAIN = 24.0
+        GAIN = 12.0
 
         if conn_type == "WiFi":
             self.receiver_instance = DataReceiver(
