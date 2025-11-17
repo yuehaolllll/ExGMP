@@ -385,11 +385,18 @@ class MainWindow(QMainWindow):
         self.num_channels_changed.connect(self.freq_domain_widget.reconfigure_channels)
         #self.num_channels_changed.connect(self.band_power_widget.reconfigure_channels)
         self.num_channels_changed.connect(self.data_processor.set_num_channels)
-
+        self.settings_panel.gain_changed.connect(self.on_gain_setting_changed)
     @pyqtSlot(int)
     def _on_num_channels_changed(self, num_channels):
         print(f"MainWindow: Detected channel count change to {num_channels}. Broadcasting...")
         self.num_channels_changed.emit(num_channels)
+
+    @pyqtSlot(float)
+    def on_gain_setting_changed(self, new_gain):
+        print(f"Menu Event: Gain changed to x{new_gain}")
+        # 如果数据接收器实例已存在 (即在连接状态下)，则立即更新它的增益
+        if self.receiver_instance:
+            self.receiver_instance.set_gain(new_gain)
 
     @pyqtSlot(str, dict)  # 明确指定接收的参数类型
     def on_connect_clicked(self, conn_type, params):
@@ -467,24 +474,35 @@ class MainWindow(QMainWindow):
         frame_size = 3 + (current_channels * 3)
         # 假设转换常量固定 (如果不同设备不同, 也应加入设置)
         V_REF = 4.5
+        current_gain = self.settings_panel.get_current_gain()
         GAIN = 12.0
 
         if conn_type == "WiFi":
+            # self.receiver_instance = DataReceiver(
+            #     num_channels=current_channels, frame_size=frame_size, v_ref=V_REF, gain=GAIN
+            # )
             self.receiver_instance = DataReceiver(
-                num_channels=current_channels, frame_size=frame_size, v_ref=V_REF, gain=GAIN
+                num_channels=8,  # 传入硬件的总通道数，例如8
+                v_ref=V_REF, gain=current_gain
             )
+            #self.receiver_instance.connection_status.connect(self.on_wifi_connected_send_commands)
         elif conn_type == "Bluetooth":
             self.receiver_instance = BluetoothDataReceiver(
-                device_address=address, num_channels=current_channels, frame_size=frame_size, v_ref=V_REF, gain=GAIN
+                device_address=address, num_channels=current_channels, frame_size=frame_size, v_ref=V_REF, gain=current_gain
             )
         elif conn_type == "Serial (UART)":
             if not params:
                 print("Error: Serial connection requires parameters.")
                 return
             self.receiver_instance = SerialDataReceiver(port=params["port"], baudrate=params["baudrate"],
-                                                        num_channels=current_channels, frame_size=frame_size, v_ref=V_REF, gain=GAIN)
+                                                        num_channels=current_channels, frame_size=frame_size, v_ref=V_REF, gain=current_gain)
         else:
             return
+
+        # 将信号连接的逻辑放在实例化之后
+        if conn_type == "WiFi":
+            # 对于Wi-Fi，我们监听连接成功信号，然后由主窗口发送命令
+            self.receiver_instance.connection_status.connect(self.on_wifi_connected_send_commands)
 
         # --- 在这里，在实例被创建后，立即连接它的信号 ---
         self.receiver_instance.connection_status.connect(self.on_connection_status_changed)
@@ -820,4 +838,45 @@ class MainWindow(QMainWindow):
         QMessageBox.critical(self, "ICA Training Error", error_message)
         # 重置UI状态
         self.tools_panel.update_status(self.is_session_running)
+
+    @pyqtSlot(str)
+    def on_wifi_connected_send_commands(self, message):
+        if "Connected" in message or "已连接" in message:
+            # 1. 一旦连接成功，就断开这个槽的连接，防止重连时重复发送
+            try:
+                self.receiver_instance.connection_status.disconnect(self.on_wifi_connected_send_commands)
+            except TypeError:
+                pass  # 可能已经断开，忽略
+
+            print("Wi-Fi connected. Sending configuration commands...")
+
+            # 2. 从SettingsPanel获取当前配置
+            rate_map = {500: 0x86, 1000: 0x85, 2000: 0x84, 4000: 0x83}
+
+            current_rate = self.settings_panel.rate_button_group.checkedId()
+            current_channels = self.settings_panel.channels_button_group.checkedId()
+
+            sample_rate_code = rate_map.get(current_rate, 0x85)  # 默认1000SPS
+
+            # 计算通道掩码
+            channel_mask = (1 << current_channels) - 1
+
+            self.receiver_instance.update_active_channels(current_channels)
+
+            # 3. 打包“设置配置”命令
+            import struct
+            # | Header | CmdID | Rate Code | Ch Mask | Checksum |
+            cmd_part = struct.pack('>BBBB', 0x5A, 0x01, sample_rate_code, channel_mask)
+            checksum = sum(cmd_part) & 0xFF
+            config_command = cmd_part + struct.pack('>B', checksum)
+
+            # 4. 打包“开始采集”命令
+            cmd_part = struct.pack('>BB', 0x5A, 0x02)
+            checksum = sum(cmd_part) & 0xFF
+            start_command = cmd_part + struct.pack('>B', checksum)
+
+            # 5. 发送命令 (需要为 DataReceiver 添加 send_command 方法)
+            self.receiver_instance.send_command(config_command)
+            # 短暂延时，给下位机处理时间
+            QTimer.singleShot(100, lambda: self.receiver_instance.send_command(start_command))
 

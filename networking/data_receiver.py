@@ -35,24 +35,46 @@ class DataReceiver(QObject):
     connection_status = pyqtSignal(str)
     raw_data_received = pyqtSignal(np.ndarray)
 
-    def __init__(self, num_channels, frame_size, v_ref, gain):
+    def __init__(self, num_channels, v_ref, gain):
         super().__init__()
         self.sock = None
         self._is_running = False
-        self.num_channels = num_channels
-        self.frame_size = frame_size
+
+        self.total_hardware_channels = num_channels  # 例如，硬件总是8通道
+        self.active_channels = num_channels  # 默认激活所有通道
+
         self.lsb_to_uv = (v_ref / gain / (2 ** 23 - 1)) * 1e6
 
         self.num_frames_per_packet = 50
 
-        # 更新数据包大小定义
-        self.packet_payload_size = self.frame_size * self.num_frames_per_packet  # 1350 bytes
+        self.packet_size = 0  # 初始化为0
+        self.frame_size = 0
+        self.update_packet_size()  # 用默认值先计算一次
+
+        self.last_sequence_number = -1
+
+    def update_active_channels(self, active_channel_count):
+        """
+        根据实际开启的通道数，重新计算所有与包大小相关的参数。
+        """
+        print(f"DataReceiver: Updating active channels to {active_channel_count}")
+        self.active_channels = active_channel_count
+        self.update_packet_size()
+
+    def update_packet_size(self):
+        """
+        一个内部辅助函数，用于根据当前的 active_channels 计算包大小。
+        """
+        # 每帧大小 = 3字节状态 + N个活动通道 * 3字节/通道
+        self.frame_size = 3 + self.active_channels * 3
+
+        self.packet_payload_size = self.frame_size * self.num_frames_per_packet
         self.packet_seq_num_size = 4
         self.packet_crc_size = 2
-        # 总包大小 = 包头(4) + 序号(4) + 负载(1350) + CRC(2) = 1360 bytes
-        self.packet_size = 4 + self.packet_seq_num_size + self.packet_payload_size + self.packet_crc_size
 
-        self.last_sequence_number = -1  # 用于检测丢包
+        self.packet_size = 4 + self.packet_seq_num_size + self.packet_payload_size + self.packet_crc_size
+        print(
+            f"DataReceiver: Packet size recalculated. Active Channels: {self.active_channels}, Frame Size: {self.frame_size}, Total Packet Size: {self.packet_size}")
 
     @pyqtSlot(int)
     def set_frames_per_packet(self, frames):
@@ -62,6 +84,14 @@ class DataReceiver(QObject):
         self.packet_payload_size = self.frame_size * self.num_frames_per_packet
         self.packet_size = 4 + self.packet_seq_num_size + self.packet_payload_size + self.packet_crc_size
         print(f"WiFi Receiver: Frames/packet set to {self.num_frames_per_packet}, new packet size: {self.packet_size}")
+
+    @pyqtSlot(float)
+    def set_gain(self, new_gain):
+        if self.gain != new_gain:
+            print(f"DataReceiver: Updating gain to x{new_gain}")
+            self.gain = new_gain
+            # 重新计算转换系数
+            self.lsb_to_uv = (self.v_ref / self.gain / (2 ** 23 - 1)) * 1e6
 
     def _recv_all(self, n):
         buffer = bytearray()
@@ -74,7 +104,10 @@ class DataReceiver(QObject):
     def _parse_packet_vectorized(self, payload):
         frames = np.frombuffer(payload, dtype=np.uint8).reshape((self.num_frames_per_packet, self.frame_size))
         channel_data = frames[:, 3:]
-        reshaped_data = channel_data.reshape((self.num_frames_per_packet, self.num_channels, 3))
+
+        # 使用 self.active_channels 而不是 self.num_channels
+        reshaped_data = channel_data.reshape((self.num_frames_per_packet, self.active_channels, 3))
+
         b1, b2, b3 = reshaped_data[:, :, 0].astype(np.int32), reshaped_data[:, :, 1].astype(np.int32), reshaped_data[:,
                                                                                                        :, 2].astype(
             np.int32)
@@ -176,6 +209,13 @@ class DataReceiver(QObject):
             if self.sock: self.sock.close()
             if self._is_running: self.connection_status.emit("已断开")
             self._is_running = False
+
+    def send_command(self, command_bytes):
+        if self.sock and self._is_running:
+            try:
+                self.sock.sendall(command_bytes)
+            except socket.error as e:
+                self.connection_status.emit(f"Command send error: {e}")
 
     def stop(self):
         self._is_running = False

@@ -38,9 +38,11 @@ class BluetoothDataReceiver(QObject):
         self._is_running = False
         self.client = None
 
+        self.v_ref = v_ref
+        self.gain = gain
         self.num_channels = num_channels
         self.frame_size = frame_size
-        self.lsb_to_uv = (v_ref / gain / (2 ** 23 - 1)) * 1e6
+        self.lsb_to_uv = (self.v_ref / self.gain / (2 ** 23 - 1)) * 1e6
 
         self.num_frames_per_packet = 10  # 蓝牙通常用较小的包
 
@@ -53,6 +55,17 @@ class BluetoothDataReceiver(QObject):
         self.last_sequence_number = -1  # 用于检测丢包
 
         self.buffer = bytearray()
+
+    @pyqtSlot(float)
+    def set_gain(self, new_gain):
+        """
+        一个槽函数，用于从外部更新增益值并重新计算转换系数。
+        """
+        if self.gain != new_gain:
+            print(f"BluetoothDataReceiver: Updating gain to x{new_gain}")
+            self.gain = new_gain
+            # 重新计算转换系数
+            self.lsb_to_uv = (self.v_ref / self.gain / (2 ** 23 - 1)) * 1e6
 
     @pyqtSlot(int)
     def set_frames_per_packet(self, frames):
