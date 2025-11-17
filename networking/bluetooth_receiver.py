@@ -1,20 +1,31 @@
 import asyncio
 import numpy as np
 from PyQt6.QtCore import QObject, pyqtSignal, pyqtSlot
-from bleak import BleakClient, BleakScanner
+from bleak import BleakClient
+import struct
 
 # --- 常量 ---
-# 这些值应该与您的STM32设备匹配
 NOTIFY_CHARACTERISTIC_UUID = "0000fff1-0000-1000-8000-00805f9b34fb"
-# 默认值设为10，与STM32匹配。可以通过Settings菜单更改。
-DEFAULT_FRAMES_PER_PACKET = 10
-FRAME_SIZE = 27
 PACKET_HEADER = b'\xaa\xbb\xcc\xdd'
 NUM_CHANNELS = 8
 V_REF = 4.5
 GAIN = 24.0
 LSB_TO_UV = (V_REF / GAIN / (2 ** 23 - 1)) * 1e6
 
+
+def crc16_ccitt(data: bytes) -> int:
+    """
+    计算CRC16-CCITT校验和，与ESP32固件中的算法保持一致。
+    """
+    crc = 0xFFFF
+    for byte in data:
+        crc ^= byte << 8
+        for _ in range(8):
+            if crc & 0x8000:
+                crc = (crc << 1) ^ 0x1021
+            else:
+                crc <<= 1
+    return crc & 0xFFFF
 
 class BluetoothDataReceiver(QObject):
     # --- 信号定义 ---
@@ -32,17 +43,26 @@ class BluetoothDataReceiver(QObject):
         self.lsb_to_uv = (v_ref / gain / (2 ** 23 - 1)) * 1e6
 
         self.num_frames_per_packet = 10  # 蓝牙通常用较小的包
-        self.packet_size = 4 + (self.frame_size * self.num_frames_per_packet)
+
+        # 更新数据包大小定义
+        self.packet_payload_size = self.frame_size * self.num_frames_per_packet
+        self.packet_seq_num_size = 4
+        self.packet_crc_size = 2
+        # 总包大小 = 包头(4) + 序号(4) + 负载 + CRC(2)
+        self.packet_size = 4 + self.packet_seq_num_size + self.packet_payload_size + self.packet_crc_size
+        self.last_sequence_number = -1  # 用于检测丢包
+
         self.buffer = bytearray()
 
-    # --- 槽函数 ---
     @pyqtSlot(int)
     def set_frames_per_packet(self, frames):
         self.num_frames_per_packet = frames
-        self.packet_size = 4 + (self.frame_size * self.num_frames_per_packet)
-        print(f"Bluetooth Receiver: Frames per packet set to {self.num_frames_per_packet}")
+        # 相应地更新包大小
+        self.packet_payload_size = self.frame_size * self.num_frames_per_packet
+        self.packet_size = 4 + self.packet_seq_num_size + self.packet_payload_size + self.packet_crc_size
+        print(f"Bluetooth Receiver: Frames/packet set to {self.num_frames_per_packet}, new packet size: {self.packet_size}")
 
-    # --- 解析函数 ---
+
     def _parse_packet_vectorized(self, payload):
         frames = np.frombuffer(payload, dtype=np.uint8).reshape((self.num_frames_per_packet, self.frame_size))
         channel_data = frames[:, 3:]
@@ -52,51 +72,75 @@ class BluetoothDataReceiver(QObject):
         raw_vals[raw_vals >= 0x800000] -= 0x1000000
         return (raw_vals * self.lsb_to_uv).astype(np.float32).T
 
-    # --- 蓝牙核心逻辑 ---
     def _notification_handler(self, sender, data: bytearray):
         """
         当收到蓝牙数据时，此回调函数被 bleak 内部的事件循环调用。
         """
+        # # --- 调试打印 1: 确认蓝牙数据到达 ---
+        # if data:
+        #     print(f"DEBUG: BLE received {len(data)} bytes.")
+
         self.buffer.extend(data)
 
-        # 循环处理缓冲区中所有可能的完整数据包
         while True:
+            # --- 调试打印 2: 检查缓冲区状态和包头搜索 ---
             header_index = self.buffer.find(PACKET_HEADER)
             if header_index == -1:
-                # 找不到包头，但可能只收了一部分，保留最后几个字节以备拼接
+                # 如果缓冲区很大但找不到头，说明数据流可能有问题
                 if len(self.buffer) > self.packet_size:
-                    print(f"Warning (BLE): Discarding {len(self.buffer)} bytes, no header found.")
+                    print(f"DEBUG WARNING: Buffer has {len(self.buffer)} bytes but NO header found. Clearing.")
                     self.buffer.clear()
-                break
+                break  # 等待更多数据
 
             if header_index > 0:
-                print(f"Warning (BLE): Discarded {header_index} sync bytes.")
+                print(f"DEBUG: Discarded {header_index} sync bytes.")
                 del self.buffer[:header_index]
 
+            # --- 调试打印 3: 检查是否有足够数据构成一个完整包 ---
             if len(self.buffer) < self.packet_size:
-                break  # 缓冲区中没有一个完整的包了
+                # print(f"DEBUG: Buffer has {len(self.buffer)} bytes, waiting for full packet of {self.packet_size}.")
+                break  # 等待更多数据
 
-            # 提取一个完整的数据包并从缓冲区移除
-            raw_packet = self.buffer[:self.packet_size]
+            raw_packet = bytes(self.buffer[:self.packet_size])
             del self.buffer[:self.packet_size]
 
-            if raw_packet[:4] == PACKET_HEADER:
-                try:
-                    parsed_data = self._parse_packet_vectorized(raw_packet[4:])
-                    self.raw_data_received.emit(parsed_data)
-                except Exception as e:
-                    print(f"Error parsing BLE packet: {e}")
-            else:
-                print("Warning (BLE): Discarded a packet with corrupted header.")
+            try:
+                seq_num = struct.unpack('>I', raw_packet[4:8])[0]
+                received_crc = struct.unpack('>H', raw_packet[-2:])[0]
+            except struct.error:
+                print("DEBUG ERROR: Failed to unpack metadata. Packet corrupted or wrong size.")
+                continue
+
+            data_to_check = raw_packet[4:-2]
+            calculated_crc = crc16_ccitt(data_to_check)
+
+            # --- 调试打印 4: 最关键的CRC校验结果 ---
+            if received_crc != calculated_crc:
+                print(f"DEBUG CRC MISMATCH on packet #{seq_num}! "
+                      f"Expected_CRC: {calculated_crc}, Received_CRC: {received_crc}. Packet dropped.")
+                continue  # 丢弃这个损坏的包
+
+            # 如果代码能运行到这里，说明CRC校验通过了
+            #print(f"DEBUG: Packet #{seq_num} PASSED CRC check!")
+
+            # ... 后续的丢包检测和数据解析 ...
+            if self.last_sequence_number != -1 and seq_num != self.last_sequence_number + 1:
+                # ...
+                print(f"DEBUG WARNING: Packet loss detected!")
+                # ...
+
+            self.last_sequence_number = seq_num
+            payload = raw_packet[8:-2]
+            parsed_data = self._parse_packet_vectorized(payload)
+            self.raw_data_received.emit(parsed_data)
+
 
     @pyqtSlot()
     def run(self):
-        """
-        此槽函数由 QThread 启动，它负责创建并运行 asyncio 事件循环。
-        """
         self._is_running = True
+        # 重置包序号计数器
+        self.last_sequence_number = -1
         try:
-            # 每个线程都需要自己的事件循环
             loop = asyncio.new_event_loop()
             asyncio.set_event_loop(loop)
             loop.run_until_complete(self._main_ble_loop())
@@ -107,32 +151,19 @@ class BluetoothDataReceiver(QObject):
             self._is_running = False
 
     async def _main_ble_loop(self):
-        """
-        这是主要的异步函数，负责连接、订阅和保持连接。
-        """
         self.connection_status.emit(f"正在连接蓝牙设备 {self.address}...")
         try:
-            # 使用 async with 来确保连接被正确关闭
             async with BleakClient(self.address, timeout=20.0) as self.client:
                 if self.client.is_connected:
                     self.connection_status.emit(f"已连接到 {self.address}")
-
-                    # 订阅特征以接收数据
                     await self.client.start_notify(NOTIFY_CHARACTERISTIC_UUID, self._notification_handler)
-
-                    # 保持连接，直到被外部的 stop() 方法停止
                     while self._is_running and self.client.is_connected:
-                        await asyncio.sleep(0.1)  # 短暂休眠以让出CPU
-
-                    # 停止订阅
+                        await asyncio.sleep(0.1)
                     if self.client.is_connected:
                         await self.client.stop_notify(NOTIFY_CHARACTERISTIC_UUID)
         except Exception as e:
             self.connection_status.emit(f"蓝牙连接错误: {e}")
 
     def stop(self):
-        """
-        从外部（主线程）调用的停止方法。
-        """
         self._is_running = False
         print("Stopping BLE receiver...")
