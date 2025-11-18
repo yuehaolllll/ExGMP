@@ -124,8 +124,8 @@ class TimeDomainWidget(QWidget):
         view = pg.GraphicsLayoutWidget()
         self.stacked_plot = view.addPlot(row=0, col=0)
 
-        self.stacked_plot.setDownsampling(mode='peak')
-        #self.stacked_plot.setDownsampling(False)
+        #self.stacked_plot.setDownsampling(mode='peak')
+        self.stacked_plot.setDownsampling(False)
         self.stacked_plot.setClipToView(True)
 
         self.stacked_plot.setLabel('bottom', 'Time', units='s')
