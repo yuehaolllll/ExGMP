@@ -141,7 +141,7 @@ class ControlPanel(QWidget):
     def reconfigure_channels(self, num_channels):
         """
         这个槽函数是核心。它会清空并根据新的通道数重建通道设置UI。
-        它由 MainWindow 的 num_channels_changed 信号触发。
+        【版本已修改，移除了Scale显示和调节按钮】
         """
         # 如果通道数未改变，且UI已经构建，则无需操作以避免闪烁
         if self.num_channels == num_channels and self.ch_checkboxes:
@@ -151,51 +151,39 @@ class ControlPanel(QWidget):
         self.num_channels = num_channels
 
         # 1. 清空旧的UI组件
-        # 这个循环是安全地从布局中移除并删除所有旧控件的关键
         while self.ch_layout.count():
             item = self.ch_layout.takeAt(0)
             widget = item.widget()
             if widget is not None:
                 widget.deleteLater()
 
-        # 2. 重置内部状态列表以匹配新的通道数
-        self.y_scales = [200.0] * num_channels
+        # 2. 重置内部状态列表
+        self.y_scales = [200.0] * num_channels  # 这个可以保留，以防未来需要
         self.ch_checkboxes = []
-        self.ch_scale_labels = []
         self.ch_name_edits = []
 
         # 3. 重新创建并添加新的UI组件
         for i in range(num_channels):
+            # --- CheckBox for visibility (保持不变) ---
             checkbox = QCheckBox(checked=True)
             checkbox.setToolTip(f"Toggle visibility for Channel {i + 1}")
-            # 使用 lambda 捕获当前的通道索引 'i'
             checkbox.stateChanged.connect(lambda state, ch=i: self.channel_visibility_changed.emit(ch, bool(state)))
 
+            # --- QLineEdit for channel name (保持不变) ---
             name_edit = QLineEdit(f"CH {i + 1}")
-            # 使用 functools.partial 是连接带参数信号的另一种稳健方式
             name_edit.editingFinished.connect(partial(self._on_name_changed, i))
 
-            scale_lbl = QLabel(f"Scale: {int(self.y_scales[i])}µV")
+            # 新布局:
+            self.ch_layout.addWidget(checkbox, i, 0)  # 第0列：复选框
+            self.ch_layout.addWidget(name_edit, i, 1, 1, 3)  # 第1列：名称输入框，让它占据剩余的所有空间
 
-            zoom_in = QPushButton("+")
-            zoom_in.setFixedWidth(30)  # 保持UI整洁
-            zoom_in.clicked.connect(partial(self.adjust_scale, i, 0.8))
-
-            zoom_out = QPushButton("-")
-            zoom_out.setFixedWidth(30)
-            zoom_out.clicked.connect(partial(self.adjust_scale, i, 1.25))
-
-            # 将新创建的控件添加到网格布局中
-            self.ch_layout.addWidget(checkbox, i, 0)
-            self.ch_layout.addWidget(name_edit, i, 1)
-            self.ch_layout.addWidget(scale_lbl, i, 2)
-            self.ch_layout.addWidget(zoom_out, i, 3)
-            self.ch_layout.addWidget(zoom_in, i, 4)
-
-            # 将控件的引用保存到列表中，以便后续访问
+            # 将控件的引用保存到列表中
             self.ch_checkboxes.append(checkbox)
-            self.ch_scale_labels.append(scale_lbl)
             self.ch_name_edits.append(name_edit)
+
+        # 调整列的拉伸因子，让名称输入框自动填满
+        self.ch_layout.setColumnStretch(0, 0)  # 第0列不拉伸
+        self.ch_layout.setColumnStretch(1, 1)  # 第1列（现在是名称输入框）占据所有可用空间
 
     def _on_sample_rate_selected(self, button):
         # 从按钮组获取与被点击按钮关联的ID（即采样率）
@@ -288,23 +276,6 @@ class ControlPanel(QWidget):
             self.pps_lbl.setText(f"Packets/sec: {pps:.1f}")
             self.kbs_lbl.setText(f"Data Rate: {kbs:.1f} KB/s")
         self.last_stat_time = current_time
-
-    def adjust_scale(self, channel, factor):
-        # Calculate the absolute new scale value
-        new_scale = self.y_scales[channel] * factor
-
-        # Check bounds
-        if 1 < new_scale < 5000:
-            self.y_scales[channel] = new_scale
-            self.ch_scale_labels[channel].setText(f"Scale: {int(new_scale)}µV")
-            # Emit the absolute new scale value
-            self.channel_scale_changed.emit(channel, new_scale)
-    # def adjust_scale(self, channel, factor):
-    #     new_scale = self.y_scales[channel] * factor
-    #     if 1 < new_scale < 5000:
-    #         self.y_scales[channel] = new_scale
-    #         self.ch_scale_labels[channel].setText(f"Scale: {int(new_scale)}µV")
-    #         self.channel_scale_changed.emit(channel, new_scale)
 
     def _on_name_changed(self, channel_index):
         """当一个通道名称 QLineEdit 完成编辑时调用"""
