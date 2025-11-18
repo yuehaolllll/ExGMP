@@ -157,7 +157,8 @@ class TimeDomainWidget(QWidget):
         # Create all 8 PlotItems once and store them
         for i in range(self.num_channels):
             p = pg.PlotItem()
-            p.setDownsampling(mode='peak')
+            #p.setDownsampling(mode='peak')
+            p.setDownsampling(False)
             p.setClipToView(True)
             p.showGrid(x=True, y=True, alpha=0.3)
             p.setYRange(-self.individual_scales[i], self.individual_scales[i])

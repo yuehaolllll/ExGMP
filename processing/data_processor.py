@@ -36,7 +36,7 @@ class DataProcessor(QObject):
 
     def __init__(self):
         super().__init__()
-        self.raw_data_buffer = collections.deque()
+        self.raw_data_buffer = collections.deque(maxlen=200)
         self.processing_timer = None
         self.sampling_rate = 1000  # 默认值
         self.num_channels = 8

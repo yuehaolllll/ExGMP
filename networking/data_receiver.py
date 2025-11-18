@@ -128,6 +128,21 @@ class DataReceiver(QObject):
             self.sock.settimeout(1.0)
             self.connection_status.emit(f"正在连接 {HOST}:{PORT}...")
             self.sock.connect((HOST, PORT))
+
+            # 1. 获取系统默认的缓冲区大小 (可选，用于观察)
+            default_buf_size = self.sock.getsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF)
+            print(f"DataReceiver: Default socket receive buffer size: {default_buf_size} bytes")
+
+            # 2. 设置一个新的、更大的缓冲区大小
+            #    例如，设置为 128KB。这个值可以根据您的数据速率调整。
+            #    一个好的起点是您预期在1秒内收到的数据量的2-4倍。
+            new_buf_size = 256 * 1024  # 128 KB
+            self.sock.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, new_buf_size)
+
+            # 3. 再次获取以确认设置成功 (可选)
+            final_buf_size = self.sock.getsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF)
+            print(f"DataReceiver: Set socket receive buffer size to: {final_buf_size} bytes")
+
             self.connection_status.emit(f"已连接到 {HOST}:{PORT}")
 
             while self._is_running:
