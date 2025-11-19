@@ -7,13 +7,25 @@ import torch
 import torch.nn.functional as F
 import os
 import time
+import sys
+from torch import nn
 
-from .rsca_model import RSCA_Net
+
+try:
+    from .rsca_model import RSCA_Net
+    print("Successfully imported RSCA_Net from local 'processing' directory.")
+
+except ImportError as e:
+    print(f"FATAL ERROR: Could not import RSCA_Net from './rsca_model.py'. Error: {e}")
+    # 后备的假类，以防万一
+    class RSCA_Net(nn.Module):
+        def __init__(self,*args,**kwargs): super().__init__(); self.fc=nn.Linear(1,1)
+        def forward(self,x): return torch.zeros(x.size(0), 8)
 
 # --- 常量 ---
-MODEL_PATH = "./models/rsca_net_8class_1.pth"
+MODEL_PATH = "./models/rsca_net_8class_dual_channel.pth"
 CLASS_LABELS = ['up', 'down', 'left', 'right', 'blink_once', 'blink_twice', 'blink_three', 'fixation']
-CONFIDENCE_THRESHOLD = 0.75
+CONFIDENCE_THRESHOLD = 0.8
 COOLDOWN_PERIOD = 0.5  # 冷却时间可以稍微延长一点
 
 # --- 窗口构成常量 ---
@@ -28,7 +40,7 @@ EVENT_TRIGGER_THRESHOLD = 35.0
 # 低阈值：用于回溯寻找事件的真正起点
 EVENT_SEARCH_THRESHOLD = 15.0  # 应该远低于高阈值
 # 最大回溯长度（点数），防止无限回溯
-MAX_BACKTRACE_SAMPLES = 100
+MAX_BACKTRACE_SAMPLES = 150
 
 
 class ModelController(QObject):
@@ -41,9 +53,26 @@ class ModelController(QObject):
         self.model = None
         self.device = None
         self.is_active = False
-        self.threshold = CONFIDENCE_THRESHOLD
+        #self.threshold = CONFIDENCE_THRESHOLD
         self.last_prediction_time = 0
-        self.is_collecting = False  # 新状态：是否正在为已触发的事件收集数据
+        self.channel_indices = {'up': -1, 'down': -1, 'left': -1, 'right': -1}
+        self.channel_names = []
+        #self.is_collecting = False  # 新状态：是否正在为已触发的事件收集数据
+
+    @pyqtSlot(list)
+    def set_channel_names(self, names):
+        """接收来自主窗口的通道名称列表，并查找EOG通道的索引。"""
+        try:
+            # 假设您的UI命名与此匹配
+            self.channel_indices['up'] = names.index('Up')
+            self.channel_indices['down'] = names.index('Down')
+            self.channel_indices['left'] = names.index('Left')
+            self.channel_indices['right'] = names.index('Right')
+            print(f"ModelController: EOG channel indices updated: {self.channel_indices}")
+        except ValueError as e:
+            print(
+                f"Warning: ModelController could not find required EOG channel name in list: {e}. Prediction will be disabled.")
+            self.channel_indices = {key: -1 for key in self.channel_indices}
 
     @pyqtSlot(bool)
     def set_active(self, is_active):
@@ -57,15 +86,16 @@ class ModelController(QObject):
 
     @pyqtSlot(np.ndarray)
     def process_data_chunk(self, filtered_chunk):
-        if not self.is_active or self.model is None: return
+        if not self.is_active or self.model is None or any(v == -1 for v in self.channel_indices.values()): return
 
-        for sample in filtered_chunk.T:
-            self.data_buffer.append(sample)
+        # 只将我们关心的4个EOG通道数据添加到缓冲区
+        eog_chunk = filtered_chunk[[self.channel_indices['up'], self.channel_indices['down'],
+                                    self.channel_indices['left'], self.channel_indices['right']], :]
+        self.data_buffer.extend(eog_chunk.T)
 
-            # 只有在空闲状态（且不在冷却期）时，才去检测新事件
-            current_time = time.time()
-            if not self.is_collecting and (current_time - self.last_prediction_time) > COOLDOWN_PERIOD:
-                self._detect_and_classify_event()
+        current_time = time.time()
+        if (current_time - self.last_prediction_time) > COOLDOWN_PERIOD:
+            self._detect_and_classify_event()
 
     def _detect_and_classify_event(self):
         """
@@ -75,54 +105,43 @@ class ModelController(QObject):
         if len(self.data_buffer) < ENERGY_WINDOW_SAMPLES:
             return
 
-        # 2. 计算当前能量
+        # 2. 直接在原始的、未差值的4个通道上计算能量
+        # 这样更稳健，不易受单个通道噪声影响
         current_segment = np.array(list(self.data_buffer)[-ENERGY_WINDOW_SAMPLES:]).T
-        h_eog = current_segment[1, :] - current_segment[0, :]
-        v_eog = current_segment[2, :] - current_segment[3, :]
-        energy = max(np.std(h_eog), np.std(v_eog))
+        # 计算每个通道的标准差，然后取最大值作为能量
+        energy = np.max(np.std(current_segment, axis=1))
 
-        # 3. 检查是否触发高阈值
         if energy > EVENT_TRIGGER_THRESHOLD:
-            # --- 事件被高阈值触发！---
-
-            # 4. 执行回溯，寻找真正的起点
-            buffer_array = np.array(self.data_buffer)  # 转换为numpy数组以便操作
+            buffer_array = np.array(self.data_buffer)
             true_start_index = -1
+            search_end = len(buffer_array)
+            search_start = max(0, search_end - MAX_BACKTRACE_SAMPLES)
 
-            # 从触发点（末尾）向前搜索，最多回溯 MAX_BACKTRACE_SAMPLES 个点
-            search_end_index = len(buffer_array)
-            search_start_index = max(0, search_end_index - MAX_BACKTRACE_SAMPLES)
-
-            for i in range(search_end_index - ENERGY_WINDOW_SAMPLES, search_start_index, -1):
+            for i in range(search_end - ENERGY_WINDOW_SAMPLES, search_start, -1):
                 segment = buffer_array[i: i + ENERGY_WINDOW_SAMPLES].T
-                h_eog_s = segment[1, :] - segment[0, :]
-                v_eog_s = segment[2, :] - segment[3, :]
-                local_energy = max(np.std(h_eog_s), np.std(v_eog_s))
-
+                local_energy = np.max(np.std(segment, axis=1))
                 if local_energy < EVENT_SEARCH_THRESHOLD:
-                    # 找到了！这是能量最后一次低于低阈值的点，我们认为它的下一个点是起点
-                    true_start_index = i + 1
+                    true_start_index = i + 1;
                     break
 
-            # 如果没找到（例如动作一开始就非常剧烈），就使用一个近似的起点
             if true_start_index == -1:
                 true_start_index = max(0, len(buffer_array) - PREDICTION_WINDOW_SAMPLES)
 
-            # 5. 检查从找到的真正起点开始，是否有足够的数据构成一个完整窗口
             if len(buffer_array) >= true_start_index + PREDICTION_WINDOW_SAMPLES:
-                # 6. 提取完整的、对齐的窗口
                 window_data = buffer_array[true_start_index: true_start_index + PREDICTION_WINDOW_SAMPLES].T
 
-                h_eog_w = window_data[1, :] - window_data[0, :]
-                v_eog_w = window_data[2, :] - window_data[3, :]
-                input_signal = np.array([h_eog_w, v_eog_w])
+                # 在这里进行差值计算
+                v_eog = window_data[0, :] - window_data[1, :]  # Up - Down
+                h_eog = window_data[3, :] - window_data[2, :]  # Right - Left
+                input_signal = np.array([h_eog, v_eog])
 
-                # 7. 分类并重置
                 self._predict(input_signal)
-                self.last_prediction_time = time.time()  # 更新冷却计时器
 
-                # 清空缓冲区，防止对同一事件的尾部进行重复检测
-                self.data_buffer.clear()
+                # 3. 不再清空整个缓冲区，而是移除已处理的事件部分
+                # 这样可以保留事件之后的数据，有利于检测紧邻的下一个事件
+                # 我们移除从起点到窗口结束的所有数据
+                del self.data_buffer[:true_start_index + PREDICTION_WINDOW_SAMPLES]
+
 
     def _load_model(self):
         """加载模型，并自动选择 CPU/GPU"""

@@ -760,6 +760,9 @@ class MainWindow(QMainWindow):
         # Create a new instance each time to ensure a clean state
         self.eye_typing_dialog = EyeTypingWidget(self)
 
+        current_names = self.control_panel.get_channel_names()
+        self.eog_model_controller.set_channel_names(current_names)
+
         # Connect the model's prediction signal to the dialog's input slot
         self.eog_model_controller.prediction_ready.connect(self.eye_typing_dialog.on_prediction_received)
 
