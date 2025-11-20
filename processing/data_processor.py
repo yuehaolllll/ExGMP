@@ -3,6 +3,7 @@ import collections
 from PyQt6.QtCore import QObject, pyqtSignal, pyqtSlot, QTimer, QThread
 import scipy.signal as signal
 import time
+import threading
 
 try:
     from mne import create_info
@@ -24,7 +25,7 @@ BANDS = {
 
 class DataProcessor(QObject):
     recording_finished = pyqtSignal([dict], [type(None)])
-    time_data_ready = pyqtSignal(np.ndarray)
+    #time_data_ready = pyqtSignal(np.ndarray)
     fft_data_ready = pyqtSignal(np.ndarray, np.ndarray)
     stats_ready = pyqtSignal(int, int)
     marker_added_live = pyqtSignal()
@@ -40,6 +41,16 @@ class DataProcessor(QObject):
         self.processing_timer = None
         self.sampling_rate = 1000  # 默认值
         self.num_channels = 8
+        self.downsample_factor = 10
+
+        # 假设最大显示时长为30秒，最大采样率为4000Hz
+        # (4000 samples/sec * 30 sec) / DOWNSAMPLE_FACTOR(10) = 12000 点
+        # 我们设置一个足够大的固定缓冲区
+        self.plot_buffer_samples = 12000
+        self.plot_buffer = np.zeros((self.num_channels, self.plot_buffer_samples))
+        self.plot_buffer_ptr = 0  # 当前写入位置的指针
+        self.plot_buffer_lock = threading.Lock()  # 用于保护缓冲区的线程锁
+
         self.fft_samples = int(self.sampling_rate * FFT_WINDOW_SECONDS)
         self.fft_data_buffer = collections.deque(maxlen=self.fft_samples)
         self.packet_counter = 0
@@ -75,15 +86,26 @@ class DataProcessor(QObject):
     def set_num_channels(self, num_channels):
         """
         核心槽函数：设置新的通道数并重置所有依赖于它的状态。
+        【版本已修正，解决了线程竞争问题】
         """
-        print(f"DataProcessor: Setting number of channels to {num_channels}.")
-        self.num_channels = num_channels
-        self.channel_names = [f'CH {i + 1}' for i in range(self.num_channels)]
+        # 使用锁来保护所有与通道数相关的状态变量的更新
+        with self.plot_buffer_lock:
+            # 只有当通道数真正改变时才执行操作
+            if self.num_channels == num_channels:
+                return
 
-        # 滤波器状态的维度依赖于通道数，必须用新维度重置
-        # 我们通过重新应用当前保存的滤波器设置来达到这个目的。
-        self.update_filter_settings(self.current_hp, self.current_lp)
-        self.update_notch_filter(self.notch_enabled, self.current_notch_freq)
+            print(f"DataProcessor: Updating states for {num_channels} channels.")
+
+            # 1. 更新所有核心状态变量
+            self.num_channels = num_channels
+            self.channel_names = [f'CH {i + 1}' for i in range(self.num_channels)]
+            self.plot_buffer = np.zeros((num_channels, self.plot_buffer_samples))
+            self.plot_buffer_ptr = 0
+
+            # 2. 在同一个锁内，重新计算依赖于通道数的滤波器状态
+            #    这确保了 _process_buffered_data 不会读到“一半”的旧状态
+            self.update_filter_settings(self.current_hp, self.current_lp)
+            self.update_notch_filter(self.notch_enabled, self.current_notch_freq)
 
     @pyqtSlot(list)
     def set_channel_names(self, names):
@@ -173,9 +195,33 @@ class DataProcessor(QObject):
         # --- 后续处理 ---
         self.fft_data_buffer.extend(filtered_chunk.T)
         self.packet_counter += len(all_chunks)
-        # downsampled_data = filtered_chunk[:, ::DOWNSAMPLE_FACTOR]
-        # self.time_data_ready.emit(downsampled_data)
-        self.time_data_ready.emit(final_chunk)
+
+        downsampled_data = final_chunk[:, ::self.downsample_factor]
+        n_samples = downsampled_data.shape[1]
+
+        if n_samples > 0:
+            with self.plot_buffer_lock:
+                start = self.plot_buffer_ptr
+                end = start + n_samples
+
+                if end <= self.plot_buffer_samples:
+                    self.plot_buffer[:, start:end] = downsampled_data
+                else:
+                    part1_len = self.plot_buffer_samples - start
+                    part2_len = n_samples - part1_len
+                    self.plot_buffer[:, start:] = downsampled_data[:, :part1_len]
+                    self.plot_buffer[:, :part2_len] = downsampled_data[:, part1_len:]
+
+                self.plot_buffer_ptr = end % self.plot_buffer_samples
+
+    def get_plot_data(self):
+        """返回一个当前绘图数据的“视图”副本，供UI线程使用。"""
+        with self.plot_buffer_lock:
+            # 展开循环缓冲区，实现滚动效果
+            data_part1 = self.plot_buffer[:, self.plot_buffer_ptr:]
+            data_part2 = self.plot_buffer[:, :self.plot_buffer_ptr]
+            # 返回一个新的数组副本
+            return np.concatenate((data_part1, data_part2), axis=1)
 
     @pyqtSlot(int)
     def start_ica_calibration(self, duration_seconds):

@@ -121,31 +121,43 @@ class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
 
-        # These local imports are fine here
+        # --- Imports and basic window setup (no changes) ---
         from .widgets.refined_ble_scan_dialog import RefinedBleScanDialog
         from .widgets.splash_widget import SplashWidget
         from processing.acquisition_controller import AcquisitionController
 
         self.setMinimumSize(1100, 750)
-        # Logo
         app_icon = QIcon(resource_path("icons/logo.png"))
         self.setWindowIcon(app_icon)
         self.setWindowTitle("ExGMP")
         pg.setConfigOption('background', '#FFFFFF')
         pg.setConfigOption('foreground', '#333333')
+
+        # --- 【核心修改】: 严格遵循 初始化 -> 创建UI -> 连接 的顺序 ---
+
+        # 1. 初始化所有后台处理器和线程
+        self.setup_threads()  # self.data_processor is created here
+        self.ica_thread = QThread()
+        self.ica_processor = ICAProcessor()
+        self.ica_processor.moveToThread(self.ica_thread)
+        self.eog_model_controller_thread = QThread()
+        self.eog_model_controller = ModelController()
+        self.eog_model_controller.moveToThread(self.eog_model_controller_thread)
+        self.acquisition_controller = AcquisitionController()
+
+        # 2. 创建所有UI组件
         self.stacked_widget = QStackedWidget()
         self.setCentralWidget(self.stacked_widget)
-
-        # --- Splash Screen Page ---
         self.splash_widget = SplashWidget(resource_path("icons/splash_animation.gif"))
         self.stacked_widget.addWidget(self.splash_widget)
 
-        # --- Main UI Page ---
         main_ui_widget = QWidget()
-        self._setup_main_ui(main_ui_widget)
+        self._setup_main_ui(main_ui_widget)  # This now ONLY sets up the main layout
         self.stacked_widget.addWidget(main_ui_widget)
 
-        # --- Initialize Dialogs and State Variables ---
+        self._create_menu_bar()  # Explicitly create the menu bar and its panels here
+
+        # 3. 初始化对话框和状态变量
         self.ble_scan_dialog = RefinedBleScanDialog(self)
         self.review_dialog = None
         self.eye_typing_dialog = None
@@ -153,30 +165,13 @@ class MainWindow(QMainWindow):
         self.receiver_thread = None
         self.receiver_instance = None
         self.is_shutting_down = False
-
         self.current_connection_message = "Disconnected"
-        # --- CORRECTED LOGIC ORDER ---
 
-        self.ica_thread = QThread()
-        self.ica_processor = ICAProcessor()
-        self.ica_processor.moveToThread(self.ica_thread)
-        self.ica_thread.start()  # 启动线程的事件循环
-
-        # 1. Instantiate ALL controllers and move them to threads FIRST
-        self.setup_threads()  # This sets up the data_processor in its thread
-
-        # Instantiate EyeTyper and ModelController
-        self.eog_model_controller_thread = QThread()
-        self.eog_model_controller = ModelController()
-        self.eog_model_controller.moveToThread(self.eog_model_controller_thread)
-
-        # Instantiate the AcquisitionController
-        self.acquisition_controller = AcquisitionController()
-
-        # 2. Now that all objects exist, connect their signals and slots ONCE
+        # 4. 连接所有信号和槽
         self.setup_connections()
 
-        # 3. Start the persistent background threads
+        # 5. 启动持久运行的后台线程
+        self.ica_thread.start()
         self.eog_model_controller_thread.start()
 
         self.update_ui_on_connection(False)
@@ -187,7 +182,7 @@ class MainWindow(QMainWindow):
         我们将原来 __init__ 中的UI构建代码移到了这里。
         """
         self.control_panel = ControlPanel()
-        self.time_domain_widget = TimeDomainWidget()
+        self.time_domain_widget = TimeDomainWidget(self.data_processor)
         self.freq_domain_widget = FrequencyDomainWidget()
         self.band_power_widget = BandPowerWidget()
 
@@ -203,7 +198,7 @@ class MainWindow(QMainWindow):
         main_layout.addLayout(plot_layout, 4)
 
         # 菜单栏的创建现在也属于主UI的一部分
-        self._create_menu_bar()
+        #self._create_menu_bar()
 
     def show_and_start_splash(self):
         """
@@ -353,7 +348,7 @@ class MainWindow(QMainWindow):
         self.control_panel.filter_settings_changed.connect(self.data_processor.update_filter_settings)
         # DataProcessor -> UI
         self.data_processor.recording_finished.connect(self.save_recording_data)
-        self.data_processor.time_data_ready.connect(self.time_domain_widget.update_plot)
+        #self.data_processor.time_data_ready.connect(self.time_domain_widget.update_plot)
         self.data_processor.fft_data_ready.connect(self.freq_domain_widget.update_realtime_fft)
         self.data_processor.stats_ready.connect(self.control_panel.update_stats)
         self.data_processor.marker_added_live.connect(self.time_domain_widget.show_live_marker)
@@ -522,6 +517,7 @@ class MainWindow(QMainWindow):
 
         self.receiver_thread.start()
         self.processor_thread.start()
+        self.time_domain_widget.start_updates()
 
     def stop_session(self, blocking=False):
         """
@@ -533,6 +529,7 @@ class MainWindow(QMainWindow):
         # 确保即使用户先点击断开再关闭窗口，清理逻辑也能在 closeEvent 中完整执行。
 
         # 仅在会话首次停止时打印消息，避免重复输出
+        self.time_domain_widget.stop_updates()
         if self.is_session_running:
             print("Stopping session...")
 

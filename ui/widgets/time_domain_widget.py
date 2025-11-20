@@ -29,8 +29,9 @@ PLOT_COLORS = [
 CHANNEL_HEIGHT = 1.0
 
 class TimeDomainWidget(QWidget):
-    def __init__(self, parent=None):
+    def __init__(self, data_processor, parent=None):
         super().__init__(parent)
+        self.data_processor = data_processor
 
         # --- 1. 初始化所有实例变量 (状态管理) ---
         self.is_review_mode = False
@@ -43,12 +44,17 @@ class TimeDomainWidget(QWidget):
         self._is_updating_stacked_range = False
         self.marker_lines, self.temp_marker_lines = [], []
         self.stacked_view_scale = 200.0
+        self._initial_autorange_done = False
 
         # 将所有动态列表初始化为空
         self.individual_scales = []
         self.data_buffers = []
         self.stacked_curves, self.stacked_labels = [], []
         self.individual_plots, self.individual_curves = [], []
+
+        self.plot_update_timer = QTimer(self)
+        self.plot_update_timer.setInterval(33)  # ~30 FPS
+        self.plot_update_timer.timeout.connect(self.update_display)
 
         # --- 2. 构建基础UI框架 ---
         main_layout = QVBoxLayout(self)
@@ -69,6 +75,16 @@ class TimeDomainWidget(QWidget):
         # --- 3. 在 __init__ 的最后，调用一次 reconfigure_channels 来完成所有UI的创建 ---
         self.reconfigure_channels(self.num_channels)
 
+    def start_updates(self):
+        """由 MainWindow 调用，在连接成功后启动定时刷新。"""
+        if not self.plot_update_timer.isActive():
+            self.plot_update_timer.start()
+
+    def stop_updates(self):
+        """由 MainWindow 调用，在断开连接后停止定时刷新。"""
+        if self.plot_update_timer.isActive():
+            self.plot_update_timer.stop()
+
     @pyqtSlot(int)
     def reconfigure_channels(self, num_channels):
         """
@@ -86,10 +102,10 @@ class TimeDomainWidget(QWidget):
         # 1. 重置与通道数相关的状态和数据缓冲区
         self.plot_window_samples = int(self.sampling_rate * self.plot_seconds)
         self.individual_scales = [200.0] * num_channels
-        self.data_buffers = [
-            collections.deque(np.zeros(self.plot_window_samples), maxlen=self.plot_window_samples)
-            for _ in range(num_channels)
-        ]
+        # self.data_buffers = [
+        #     collections.deque(np.zeros(self.plot_window_samples), maxlen=self.plot_window_samples)
+        #     for _ in range(num_channels)
+        # ]
 
         # 2. 清理旧的绘图组件
         # 安全地从 QStackedWidget 中移除并删除旧的 GraphicsLayoutWidgets
@@ -299,16 +315,72 @@ class TimeDomainWidget(QWidget):
         for i in range(self.num_channels):
             self.individual_curves[i].setData(x=time_vector, y=data_source[i])
 
-    def update_plot(self, data_chunk):
-        if self.is_review_mode: return
-        # 防御性检查，确保传入的数据维度和当前UI配置的通道数匹配
-        if data_chunk.shape[0] != self.num_channels:
-            print(
-                f"Warning (TimeDomain): Received data with {data_chunk.shape[0]} channels, but UI is configured for {self.num_channels}. Ignoring chunk.")
+    def update_display(self):
+        """按固定频率主动拉取数据并更新绘图。"""
+        if self.is_review_mode or self.data_processor is None:
             return
+
+        # 1. 从 DataProcessor 拉取最新的、已展开的滚动数据
+        full_plot_data = self.data_processor.get_plot_data()
+
+        # 2. 计算当前需要显示的数据窗口
+        # 注意：这里的采样率是降采样后的速率
+        downsampled_rate = self.sampling_rate / self.data_processor.downsample_factor
+        num_display_samples = int(downsampled_rate * self.plot_seconds)
+
+        # 3. 从数据末尾截取需要显示的部分
+        # .copy() 是可选的，但可以防止一些潜在的跨线程问题
+        display_data = full_plot_data[:, -num_display_samples:].copy()
+
+        # 4. 创建对应的时间轴
+        time_vector = np.linspace(0, self.plot_seconds, display_data.shape[1])
+
+        # 5. 更新曲线数据 (这里不再需要调用 _redraw_all_channels)
+        scale = self.stacked_view_scale
+        if abs(scale) < 1e-9: scale = 1e-9
+
         for i in range(self.num_channels):
-            self.data_buffers[i].extend(data_chunk[i])
-        self._redraw_all_channels()
+            if i < len(self.stacked_curves):
+                # 更新 Stacked View
+                offset = (self.num_channels - 1 - i) * CHANNEL_HEIGHT
+                scaled_data = (display_data[i] / scale * CHANNEL_HEIGHT / 2) + offset
+                self.stacked_curves[i].setData(x=time_vector, y=scaled_data)
+
+            if i < len(self.individual_curves):
+                # 更新 Individual View
+                self.individual_curves[i].setData(x=time_vector, y=display_data[i])
+
+        # 6. 处理首次自动缩放 (逻辑不变，但放在这里)
+        if not self._initial_autorange_done and np.any(display_data):
+            self.stacked_plot.enableAutoRange(axis='y', enable=False)
+            for p in self.individual_plots:
+                p.enableAutoRange(axis='y', enable=False)
+            self._initial_autorange_done = True
+            print("TimeDomainWidget: Initial auto-ranging complete. Y-axis range is now fixed.")
+    # def update_plot(self, data_chunk):
+    #     if self.is_review_mode: return
+    #     # 防御性检查，确保传入的数据维度和当前UI配置的通道数匹配
+    #     if data_chunk.shape[0] != self.num_channels:
+    #         print(
+    #             f"Warning (TimeDomain): Received data with {data_chunk.shape[0]} channels, but UI is configured for {self.num_channels}. Ignoring chunk.")
+    #         return
+    #     for i in range(self.num_channels):
+    #         self.data_buffers[i].extend(data_chunk[i])
+    #
+    #     if not self._initial_autorange_done:
+    #         # 在刚开始时，保持自动缩放开启
+    #         # 我们可以在这里加一个计数器，例如在第10帧数据到达后关闭它
+    #         # 一个更简单的方法是，只要数据不是全0，就认为可以关闭了
+    #         if np.any(data_chunk):  # 检查数据块中是否有非零值
+    #             # 禁用所有绘图区域的Y轴自动缩放
+    #             self.stacked_plot.enableAutoRange(axis='y', enable=False)
+    #             for p in self.individual_plots:
+    #                 p.enableAutoRange(axis='y', enable=False)
+    #
+    #             self._initial_autorange_done = True
+    #             print("TimeDomainWidget: Initial auto-ranging complete. Y-axis range is now fixed.")
+    #
+    #     self._redraw_all_channels()
 
     @pyqtSlot(int, str)
     def update_channel_name(self, channel, new_name):
@@ -348,15 +420,6 @@ class TimeDomainWidget(QWidget):
         for i, label in enumerate(self.stacked_labels):
             offset = (self.num_channels - 1 - i) * CHANNEL_HEIGHT
             label.setPos(-0.05 * self.plot_seconds, offset)
-
-        # 重建缓冲区以适应新的长度
-        for i in range(self.num_channels):
-            current_data = list(self.data_buffers[i])
-            new_buffer = collections.deque(maxlen=self.plot_window_samples)
-            new_buffer.extend(current_data)
-            self.data_buffers[i] = new_buffer
-
-        self._redraw_all_channels()
 
     @pyqtSlot(int, float)
     def adjust_scale(self, channel, new_scale):
@@ -439,7 +502,18 @@ class TimeDomainWidget(QWidget):
             self.static_data = None
             self.static_time_vector = None
             self.set_plot_duration(5)
-            for i in range(self.num_channels):
-                self.data_buffers[i].clear()
-                self.data_buffers[i].extend(np.zeros(self.plot_window_samples))
-            self._redraw_all_channels()
+            # for i in range(self.num_channels):
+            #     self.data_buffers[i].clear()
+            #     self.data_buffers[i].extend(np.zeros(self.plot_window_samples))
+
+            self._initial_autorange_done = False
+            self.stacked_plot.enableAutoRange(axis='y', enable=True)
+            for p in self.individual_plots:
+                p.enableAutoRange(axis='y', enable=True)
+
+            #self._redraw_all_channels()
+            downsample_factor = self.data_processor.downsample_factor if self.data_processor else 10
+            empty_data = np.zeros(int(self.sampling_rate / downsample_factor * self.plot_seconds))
+            time_vector = np.linspace(0, self.plot_seconds, len(empty_data))
+            for curve in self.stacked_curves: curve.setData(x=time_vector, y=empty_data)
+            for curve in self.individual_curves: curve.setData(x=time_vector, y=empty_data)
