@@ -1,428 +1,302 @@
+import sys
 from PyQt6.QtWidgets import (QDialog, QWidget, QVBoxLayout, QHBoxLayout, QGridLayout,
-                             QPushButton, QLineEdit, QLabel, QSizePolicy)
-from PyQt6.QtCore import Qt
-from PyQt6.QtCore import QTimer
+                             QPushButton, QLineEdit, QLabel, QFrame, QGraphicsDropShadowEffect,
+                             QSizePolicy, QStackedWidget, QApplication)
+from PyQt6.QtCore import Qt, QTimer, QSize
+from PyQt6.QtGui import QColor, QFont
+import qtawesome as qta
 
-# T9 Layout data remains the same
-T9_LAYOUT = {
-    1: ("1.,?!", "1.,?!"), 2: ("ABC2", "ABC2"), 3: ("DEF3", "DEF3"),
-    4: ("GHI4", "GHI4"), 5: ("JKL5", "JKL5"), 6: ("MNO6", "MNO6"),
-    7: ("PQRS7", "PQRS7"), 8: ("TUV8", "TUV8"), 9: ("WXYZ9", "WXYZ9"),
-    "*": ("*", "*"), 0: ("Space", " "), "#": ("Bksp", "<--")
-}
+# --- 核心数据结构: 支持多页的十字布局 ---
 
-# --- NEW, GOOGLE KEYBOARD (GBOARD) INSPIRED STYLESHEET ---
-# EYE_TYPING_STYLE = """
-# /* Main Dialog: Dark gray background */
-# #EyeTypingDialog {
-#     background-color: #202124; /* Gboard's dark background */
-#     border-radius: 12px;
-# }
-#
-# /* Text Display Area */
-# QLineEdit {
-#     background-color: #202124;
-#     border: none;
-#     padding: 20px 15px;
-#     color: #E8EAED; /* Gboard's light text */
-#     font-size: 28px;
-#     font-family: "Segoe UI", "Roboto", sans-serif;
-# }
-#
-# /* Container for the grid keyboard (no visible style needed) */
-# #GridContainer {
-#     background-color: transparent;
-#     padding: 0px;
-# }
-#
-# /* General style for ALL grid buttons */
-# QPushButton#GridButton {
-#     background-color: #43464A; /* Gboard's key color */
-#     border: none;
-#     border-radius: 8px;
-#     color: #E8EAED;
-#     font-size: 18px;
-#     font-weight: 500; /* Medium weight, not too bold */
-#     min-height: 75px;
-# }
-#
-# /* Style for special keys like Space and Backspace */
-# QPushButton#SpecialKey {
-#     background-color: #686B6F; /* Lighter gray for function keys */
-# }
-#
-# /* Highlighted (selected) grid button */
-# QPushButton#GridButton[highlighted="true"],
-# QPushButton#SpecialKey[highlighted="true"] {
-#     background-color: #8AB4F8; /* Gboard's iconic blue highlight */
-#     color: #202124; /* Dark text on highlight */
-# }
-#
-# /* Character selection bubble container */
-# #CharBubble {
-#     background-color: transparent;
-#     min-height: 70px; /* Reserve space */
-# }
-# #CharBubble[visible="true"] {
-#     background-color: #8AB4F8; /* Blue background for the bubble */
-#     border-radius: 10px;
-# }
-#
-# /* Character labels inside the bubble */
-# #CharLabel {
-#     color: #202124; /* Dark text on blue background */
-#     font-size: 24px;
-#     font-weight: bold;
-#     padding: 10px 15px;
-#     border-radius: 8px;
-# }
-# #CharLabel[highlighted="true"] {
-#     background-color: #FFFFFF; /* White highlight for selected char */
-#     color: #202124;
-# }
-#
-# /* Simulation/Control buttons at the bottom */
-# QPushButton#ControlButton {
-#     background-color: #282A2C;
-#     border: 1px solid #43464A;
-#     border-radius: 6px;
-#     color: #BDC1C6;
-#     font-size: 11px;
-#     font-weight: normal;
-#     padding: 8px 0;
-#     min-height: 0;
-# }
-# QPushButton#ControlButton:pressed {
-#     background-color: #8AB4F8;
-#     color: #202124;
-# }
-# """
-EYE_TYPING_STYLE = """
-/* --- Main Dialog --- */
-#EyeTypingDialog {
-    background-color: #202124; /* 深空灰背景 */
-    border-radius: 16px; /* 更圆润的边角 */
+# 1. 上方组 (高频元音): 5个
+GROUP_UP = {'UP': 'A', 'RIGHT': 'E', 'DOWN': 'I', 'LEFT': 'O', 'CENTER': 'U'}
+
+# 2. 右侧组 (高频辅音): 5个
+GROUP_RIGHT = {'UP': 'T', 'RIGHT': 'N', 'DOWN': 'S', 'LEFT': 'R', 'CENTER': 'H'}
+
+# 3. 下方组 (中频辅音): 5个
+GROUP_DOWN = {'UP': 'D', 'RIGHT': 'L', 'DOWN': 'C', 'LEFT': 'M', 'CENTER': 'W'}
+
+# 4. 左侧组 (低频区 - 分页模式): 剩余 11 个字母
+# 逻辑：'LEFT' 方向键被征用为 "翻页 (>>)" 键
+GROUP_LEFT_PAGES = [
+    # Page 1: 相对常用的 (G, F, Y, B)
+    {'UP': 'G', 'RIGHT': 'F', 'DOWN': 'Y', 'LEFT': '>>', 'CENTER': 'B'},
+    # Page 2: 次常用的 (P, V, K, J)
+    {'UP': 'P', 'RIGHT': 'V', 'DOWN': 'K', 'LEFT': '>>', 'CENTER': 'J'},
+    # Page 3: 最生僻的 (X, Q, Z)
+    {'UP': 'X', 'RIGHT': 'Q', 'DOWN': 'Z', 'LEFT': '<<', 'CENTER': ''}  # << 回到第一页
+]
+
+# 主菜单映射
+MAIN_MENU = {
+    'UP': (GROUP_UP, "AEIOU"),
+    'RIGHT': (GROUP_RIGHT, "TNSRH"),
+    'DOWN': (GROUP_DOWN, "DLCMW"),
+    'LEFT': (GROUP_LEFT_PAGES[0], "GFY..")  # 初始显示第一页
 }
 
-/* --- Title Bar & Close Button --- */
-#TitleLabel {
-    color: #9AA0A6;
-    font-weight: 500;
-    font-size: 14px;
-    padding-left: 10px;
-}
-#CloseButton {
-    border: none;
-    background: transparent;
-    color: #9AA0A6;
-    font-size: 20px;
-    font-family: "Arial", sans-serif; /* Use a font that has a nice '✕' */
-    min-width: 40px;
-    max-width: 40px;
-}
-#CloseButton:hover {
-    color: #F28B82; /* 悬停时变为红色 */
+MOCK_DICTIONARY = ["hello", "how", "are", "you", "thanks", "good", "yue", "zhi", "hao", "zoo", "quiz"]
+
+COLORS = {
+    "bg": "#F5F7FA", "surface": "#FFFFFF", "accent": "#03A9F4",
+    "text_main": "#37474F", "text_dim": "#B0BEC5", "shadow": QColor(3, 169, 244, 60)
 }
 
-/* --- Text Display Area --- */
-QLineEdit {
-    background-color: transparent; /* 透明背景，融入主对话框 */
-    border: none;
-    padding: 15px;
-    color: #E8EAED; /* 浅灰色文本 */
-    font-size: 32px;
-    font-family: "Segoe UI", "Roboto", sans-serif;
-}
-
-/* --- Character Selection Bubble --- */
-#CharBubble {
-    background-color: #8AB4F8; /* Gboard 标志性蓝色 */
-    border-radius: 35px; /* 完全圆角的“药丸”形状 */
-    min-height: 70px;
-}
-/* Character labels inside the bubble */
-QLabel#CharLabel {
-    color: #202124; /* 蓝色背景上的深色文本 */
-    font-size: 26px;
-    font-weight: bold;
-    padding: 8px 16px;
-    border-radius: 20px;
-    background-color: transparent;
-}
-QLabel#CharLabel[highlighted="true"] {
-    background-color: rgba(255, 255, 255, 0.8); /* 半透明白色高亮 */
-}
-
-/* --- Grid Keyboard --- */
-#GridContainer {
-    background-color: transparent;
-}
-/* General style for ALL grid buttons */
-QPushButton#GridButton {
-    background-color: #3C4043; /* 稍亮的按键颜色 */
-    border: none;
-    border-radius: 10px;
-    color: #E8EAED;
-    font-size: 18px;
-    font-weight: 500;
-    min-height: 75px;
-    transition: background-color 0.1s ease-in-out; /* 添加平滑过渡效果 */
-}
-/* Style for special keys (Space, Backspace) */
-QPushButton#SpecialKey {
-    background-color: #303134; /* 稍暗的功能键颜色 */
-    font-size: 14px;
-}
-
-/* Highlighted (selected) grid button */
-QPushButton#GridButton[highlighted="true"],
-QPushButton#SpecialKey[highlighted="true"] {
-    background-color: #8AB4F8; /* 蓝色高亮 */
-    color: #202124;
-}
-
-/* --- Simulation/Control buttons --- */
-QPushButton#ControlButton {
-    background-color: #303134;
-    border: none;
-    border-radius: 6px;
-    color: #BDC1C6;
-    font-size: 12px;
-    padding: 10px 0;
-    min-height: 0;
-}
-QPushButton#ControlButton:pressed {
-    background-color: #43464A;
-}
+STYLE_SHEET = f"""
+    QDialog {{ background-color: {COLORS['bg']}; border-radius: 20px; }}
+    QLineEdit {{
+        background-color: #ECEFF1; border: none; border-radius: 10px;
+        color: {COLORS['text_main']}; font-size: 32px; font-weight: bold; padding: 10px;
+    }}
+    QLabel {{ font-family: "Segoe UI"; }}
 """
+
+
+class CruxButton(QPushButton):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+        layout = QVBoxLayout(self);
+        layout.setContentsMargins(0, 0, 0, 0);
+        layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
+
+        self.lbl_content = QLabel()
+        self.lbl_content.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.lbl_content.setFont(QFont("Segoe UI", 24, QFont.Weight.Bold))
+        self.lbl_content.setStyleSheet(f"color: {COLORS['text_main']}; background: transparent;")
+        layout.addWidget(self.lbl_content)
+        self.default_style()
+
+    def default_style(self):
+        self.setStyleSheet(
+            f"QPushButton {{ background-color: {COLORS['surface']}; border: 1px solid #CFD8DC; border-radius: 16px; }}")
+        self.setGraphicsEffect(None)
+
+    def highlight_style(self):
+        self.setStyleSheet(
+            f"QPushButton {{ background-color: {COLORS['surface']}; border: 3px solid {COLORS['accent']}; border-radius: 16px; }}")
+        glow = QGraphicsDropShadowEffect(self)
+        glow.setBlurRadius(30);
+        glow.setColor(COLORS['shadow']);
+        glow.setOffset(0, 0)
+        self.setGraphicsEffect(glow)
+
+    def set_highlight(self, active):
+        self.highlight_style() if active else self.default_style()
+
+    def set_map_content(self, group_data):
+        u, d = group_data.get('UP', '.'), group_data.get('DOWN', '.')
+        l, r = group_data.get('LEFT', '.'), group_data.get('RIGHT', '.')
+        c = group_data.get('CENTER', '·')
+
+        # 特殊处理翻页符号的颜色
+        l_color = "#03A9F4" if l in ['>>', '<<'] else "#90A4AE"
+        l_weight = "bold" if l in ['>>', '<<'] else "normal"
+
+        html = f"""
+        <table width="100%" cellpadding="0" cellspacing="0" style='line-height:120%;'>
+            <tr><td width="33%"></td><td width="34%" align="center" style='font-size:18px; color:#90A4AE; padding-bottom:5px'>{u}</td><td width="33%"></td></tr>
+            <tr>
+                <td width="33%" align="center" style='font-size:18px; color:{l_color}; font-weight:{l_weight}; padding-right:5px'>{l}</td>
+                <td width="34%" align="center" style='font-size:40px; font-weight:bold; color:#37474F'>{c}</td>
+                <td width="33%" align="center" style='font-size:18px; color:#90A4AE; padding-left:5px'>{r}</td>
+            </tr>
+            <tr><td width="33%"></td><td width="34%" align="center" style='font-size:18px; color:#90A4AE; padding-top:5px'>{d}</td><td width="33%"></td></tr>
+        </table>"""
+        self.lbl_content.setText(html)
+
+    def set_single_char(self, char):
+        color = "#03A9F4" if char in ['>>', '<<'] else "#37474F"
+        self.lbl_content.setText(
+            f"<div align='center' style='font-size:60px; font-weight:bold; color:{color}'>{char}</div>")
+
+    def set_icon(self, icon_name):
+        icon = qta.icon(icon_name, color=COLORS['text_main'])
+        self.lbl_content.setPixmap(icon.pixmap(QSize(48, 48)))
+
 
 class EyeTypingWidget(QDialog):
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setWindowTitle("Eye Typing Interface")
         self.setWindowFlags(Qt.WindowType.FramelessWindowHint | Qt.WindowType.Dialog)
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
-        self.setObjectName("EyeTypingDialog")
-        self.setStyleSheet(EYE_TYPING_STYLE)
-        self.setFixedSize(420, 680)
+        self.setFixedSize(450, 700)
+        self.setStyleSheet(STYLE_SHEET)
 
-        main_layout = QVBoxLayout(self)
-        main_layout.setSpacing(15)
-        main_layout.setContentsMargins(10, 10, 10, 10)
+        self.STATE_HOME = 0
+        self.STATE_GROUP = 1
+        self.current_state = self.STATE_HOME
 
-        self._create_title_bar(main_layout)
+        self.active_direction = None
+        self.selected_group_data = None
 
-        self.display = QLineEdit()
-        self.display.setReadOnly(True)
-        self.display.setAlignment(Qt.AlignmentFlag.AlignRight)
-        main_layout.addWidget(self.display)
+        # 分页状态
+        self.is_paging_group = False  # 当前是否在左侧翻页组
+        self.current_page_idx = 0
 
-        # self.char_bubble = QWidget(self)
-        # self.char_bubble.setObjectName("CharBubble")
-        # self.char_bubble_layout = QHBoxLayout(self.char_bubble)
-        # self.char_bubble_layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        # self.char_bubble_layout.setSpacing(5)
-        # self.char_bubble.setProperty("visible", False)
-        # main_layout.addWidget(self.char_bubble)
-        self.char_bubble_container = QWidget(self)
-        self.char_bubble_container.setMinimumHeight(70)
-        char_bubble_outer_layout = QHBoxLayout(self.char_bubble_container)
-        char_bubble_outer_layout.setContentsMargins(0, 0, 0, 0)
-        self.char_bubble = QWidget()
-        self.char_bubble.setObjectName("CharBubble")
-        self.char_bubble_layout = QHBoxLayout(self.char_bubble)
-        self.char_bubble_layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.char_bubble_layout.setSpacing(8)
-        self.char_bubble.setContentsMargins(15, 5, 15, 5)
-        char_bubble_outer_layout.addWidget(self.char_bubble)
-        self.char_bubble.hide()  # 默认隐藏
-        main_layout.addWidget(self.char_bubble_container)
+        self._init_ui()
 
-        grid_container = QWidget()
-        grid_container.setObjectName("GridContainer")
-        grid_layout = QGridLayout(grid_container)
-        grid_layout.setSpacing(10)
-        main_layout.addWidget(grid_container, 1)
+    def _init_ui(self):
+        layout = QVBoxLayout(self);
+        layout.setContentsMargins(20, 20, 20, 20)
 
-        self.key_buttons = {}
-        positions = [((i - 1) // 3, (i - 1) % 3) for i in range(1, 10)] + [(3, 0), (3, 1), (3, 2)]
-        keys = list(range(1, 10)) + ['*', 0, '#']
-        for key, pos in zip(keys, positions):
-            text, _ = T9_LAYOUT[key]
-            button = QPushButton(text)
+        top = QHBoxLayout()
+        lbl = QLabel("CRUX FLOW v2");
+        lbl.setStyleSheet("color:#B0BEC5; font-weight:bold")
+        btn = QPushButton(qta.icon('fa5s.times', color="#B0BEC5"), "");
+        btn.setFlat(True)
+        btn.clicked.connect(self.reject)
+        top.addWidget(lbl);
+        top.addStretch();
+        top.addWidget(btn)
+        layout.addLayout(top)
 
-            # --- KEY CHANGE: Assign different object names for styling ---
-            if key in [0, '#']:  # Space and Backspace
-                button.setObjectName("SpecialKey")
+        # Suggestion Bar (Simplified for this demo)
+        self.sugg_layout = QHBoxLayout()
+        self.sugg_labels = []
+        for _ in range(3):
+            l = QLabel();
+            l.setAlignment(Qt.AlignmentFlag.AlignCenter);
+            l.setFont(QFont("Segoe UI", 14))
+            self.sugg_layout.addWidget(l);
+            self.sugg_labels.append(l)
+        layout.addLayout(self.sugg_layout)
+
+        self.display = QLineEdit();
+        self.display.setReadOnly(True);
+        self.display.setPlaceholderText("Ready...")
+        layout.addWidget(self.display)
+
+        grid_widget = QWidget();
+        self.grid = QGridLayout(grid_widget);
+        self.grid.setSpacing(15)
+        self.buttons = {}
+        for d, (r, c) in {'UP': (0, 1), 'LEFT': (1, 0), 'RIGHT': (1, 2), 'DOWN': (2, 1)}.items():
+            btn = CruxButton();
+            self.grid.addWidget(btn, r, c);
+            self.buttons[d] = btn
+
+        # Corners
+        self.btn_bs = CruxButton();
+        self.btn_bs.set_icon('fa5s.backspace')
+        self.grid.addWidget(self.btn_bs, 0, 2)
+        self.btn_sp = CruxButton();
+        self.btn_sp.set_icon('fa5s.minus')  # Space
+        self.grid.addWidget(self.btn_sp, 2, 2)
+
+        self.center_hint = QLabel();
+        self.center_hint.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.center_hint.setStyleSheet(f"color:{COLORS['accent']}; font-weight:bold");
+        self.grid.addWidget(self.center_hint, 1, 1)
+        layout.addWidget(grid_widget, 1)
+
+        self._refresh_ui()
+
+    def on_prediction_received(self, cmd):
+        cmd = cmd.upper()
+        if self.current_state == self.STATE_HOME:
+            self._handle_home(cmd)
+        elif self.current_state == self.STATE_GROUP:
+            self._handle_group(cmd)
+
+    def _handle_home(self, cmd):
+        if cmd in ['UP', 'DOWN', 'LEFT', 'RIGHT']:
+            self.active_direction = cmd
+        elif cmd == 'BLINK_TWICE':
+            if self.active_direction:
+                if self.active_direction == 'LEFT':
+                    # 进入分页组 (左侧)
+                    self.is_paging_group = True
+                    self.current_page_idx = 0
+                    self.selected_group_data = GROUP_LEFT_PAGES[0]
+                else:
+                    # 进入普通组
+                    self.is_paging_group = False
+                    self.selected_group_data = MAIN_MENU[self.active_direction][0]
+
+                self.current_state = self.STATE_GROUP
+                self.active_direction = None
+        elif cmd == 'BLINK_THREE':
+            self.display.setText(self.display.text()[:-1])  # Backspace
+
+        self._refresh_highlight()
+        self._refresh_ui()
+
+    def _handle_group(self, cmd):
+        if cmd in ['UP', 'DOWN', 'LEFT', 'RIGHT']:
+            self.active_direction = cmd
+        elif cmd == 'BLINK_TWICE':
+            char = self.selected_group_data.get(self.active_direction or 'CENTER')
+
+            if char == '>>':
+                # 下一页
+                self.current_page_idx = (self.current_page_idx + 1) % len(GROUP_LEFT_PAGES)
+                self.selected_group_data = GROUP_LEFT_PAGES[self.current_page_idx]
+                self.active_direction = None  # 重置焦点
+            elif char == '<<':
+                # 回第一页
+                self.current_page_idx = 0
+                self.selected_group_data = GROUP_LEFT_PAGES[0]
+                self.active_direction = None
+            elif char:
+                self.display.setText(self.display.text() + char)
+                self.current_state = self.STATE_HOME
+                self.selected_group_data = None
+                self.active_direction = None
+                self._update_sugg()
+        elif cmd == 'BLINK_THREE':
+            self.current_state = self.STATE_HOME  # 退回首页
+
+        self._refresh_highlight()
+        self._refresh_ui()
+
+    def _refresh_ui(self):
+        if self.current_state == self.STATE_HOME:
+            self.center_hint.setText("Look Dir\nBlink x2")
+            for d, btn in self.buttons.items():
+                btn.set_map_content(MAIN_MENU[d][0])
+        elif self.current_state == self.STATE_GROUP:
+            c = self.selected_group_data.get('CENTER', '')
+            self.center_hint.setText(f"Center:\n{c}")
+            for d, btn in self.buttons.items():
+                btn.set_single_char(self.selected_group_data.get(d, ''))
+
+    def _refresh_highlight(self):
+        for d, btn in self.buttons.items(): btn.set_highlight(d == self.active_direction)
+
+    def _update_sugg(self):
+        # 简单更新联想词
+        txt = self.display.text().split(' ')[-1].lower()
+        matches = [w for w in MOCK_DICTIONARY if w.startswith(txt)][:3] if txt else []
+        for i, l in enumerate(self.sugg_labels):
+            if i < len(matches):
+                l.setText(matches[i]); l.show(); l.setStyleSheet(
+                    f"background:{COLORS['accent']};color:white;padding:5px;border-radius:5px")
             else:
-                button.setObjectName("GridButton")
+                l.hide()
 
-            button.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
-            grid_layout.addWidget(button, pos[0], pos[1])
-            self.key_buttons[key] = button
+    # Mouse Drag
+    def mousePressEvent(self, e):
+        self.oldPos = e.globalPosition().toPoint()
 
-        self.STATE_GRID, self.STATE_CHAR = 0, 1
-        self.current_state = self.STATE_GRID
-        self.grid_pos = [1, 1]
-        self.grid_map = [[1, 2, 3], [4, 5, 6], [7, 8, 9], ['*', 0, '#']]
-        self.current_char_options, self.char_pos = [], 0
-
-        self._create_control_buttons(main_layout)
-        self._update_highlight()
-
-    # def _create_title_bar(self, parent_layout):
-    #     title_bar = QWidget()
-    #     title_layout = QHBoxLayout(title_bar)
-    #     title_layout.setContentsMargins(5, 0, 0, 0)
-    #     title_label = QLabel("Eye Typing Interface")
-    #     title_label.setStyleSheet("color: #9AA0A6; font-weight: 500; font-size: 14px;")
-    #     close_btn = QPushButton("✕")
-    #     close_btn.setFixedSize(30, 30)
-    #     close_btn.setStyleSheet("""
-    #         QPushButton { border: none; background: transparent; color: #9AA0A6; font-size: 18px; }
-    #         QPushButton:hover { color: #F28B82; } /* Gboard's red for close/delete */
-    #     """)
-    #     close_btn.clicked.connect(self.reject)
-    #     title_layout.addWidget(title_label)
-    #     title_layout.addStretch()
-    #     title_layout.addWidget(close_btn)
-    #     parent_layout.addWidget(title_bar)
-    def _create_title_bar(self, parent_layout):
-        title_bar = QWidget()
-        title_layout = QHBoxLayout(title_bar)
-        title_layout.setContentsMargins(0, 0, 0, 0)
-        title_label = QLabel("Eye Typing")  # 简化标题
-        title_label.setObjectName("TitleLabel")
-        close_btn = QPushButton("✕")
-        close_btn.setObjectName("CloseButton")
-        close_btn.setToolTip("Close")
-        close_btn.clicked.connect(self.reject)
-        title_layout.addWidget(title_label)
-        title_layout.addStretch()
-        title_layout.addWidget(close_btn)
-        parent_layout.addWidget(title_bar)
-
-    def _create_control_buttons(self, parent_layout):
-        control_container = QWidget()
-        control_layout = QHBoxLayout(control_container)
-        control_layout.setSpacing(8)
-        btn_map = {"◀": "LEFT", "▲": "UP", "OK": "BLINK_TWICE", "▼": "DOWN", "▶": "RIGHT", "Bk": "BLINK_THREE"}
-        for text, command in btn_map.items():
-            btn = QPushButton(text)
-            btn.setObjectName("ControlButton")
-            btn.clicked.connect(lambda _, cmd=command: self.on_prediction_received(cmd))
-            control_layout.addWidget(btn)
-        parent_layout.addWidget(control_container)
-
-    def on_prediction_received(self, command):
-        # --- 状态机逻辑重构 ---
-        if self.current_state == self.STATE_GRID:
-            self._handle_grid_state(command)
-        elif self.current_state == self.STATE_CHAR:
-            self._handle_char_state(command)
-
-        self._update_highlight()
-
-    def _handle_grid_state(self, command):
-        """处理网格选择状态下的所有命令"""
-        if command == "UP":
-            self.grid_pos[0] = max(0, self.grid_pos[0] - 1)
-        elif command == "DOWN":
-            self.grid_pos[0] = min(3, self.grid_pos[0] + 1)
-        elif command == "LEFT":
-            self.grid_pos[1] = max(0, self.grid_pos[1] - 1)
-        elif command == "RIGHT":
-            self.grid_pos[1] = min(2, self.grid_pos[1] + 1)
-        elif command == "BLINK_TWICE":
-            self._select_key()  # 确认选择按键
-        elif command == "BLINK_THREE":
-            self._backspace()  # 在网格状态下，长眨眼直接是退格
-
-    def _handle_char_state(self, command):
-        """处理字符选择状态下的所有命令"""
-        # 【优化1】在字符选择状态，UP/DOWN 也可以用来循环选择字符
-        if command in ["LEFT", "UP"]:
-            self.char_pos = (self.char_pos - 1) % len(self.current_char_options)
-        elif command in ["RIGHT", "DOWN"]:
-            self.char_pos = (self.char_pos + 1) % len(self.current_char_options)
-        elif command == "BLINK_TWICE":
-            self._select_char()  # 确认选择字符
-        elif command == "BLINK_THREE":
-            self._go_back_to_grid()  # 长眨眼返回网格
-
-    def _select_key(self):
-        key = self.grid_map[self.grid_pos[0]][self.grid_pos[1]]
-        _, chars = T9_LAYOUT[key]
-        if chars == "<--": self._backspace(); return
-        if chars == " ": self.display.setText(self.display.text() + " "); return
-
-        self.current_char_options = list(chars)
-
-        # 单字符按键直接上屏，无需进入字符选择
-        if len(self.current_char_options) == 1:
-            self.display.setText(self.display.text() + self.current_char_options[0])
-            self._flash_highlight(self.key_buttons[key])  # 增加闪烁反馈
-            return
-
-        self.char_pos = 0
-        self.current_state = self.STATE_CHAR
-        self._populate_char_bubble()
-        self.char_bubble.setProperty("visible", True)
-
-    def _flash_highlight(self, widget):
-        """给一个控件一个短暂的“成功”闪烁效果"""
-        original_stylesheet = widget.styleSheet()
-        widget.setStyleSheet(original_stylesheet + "background-color: #4CAF50;")  # 绿色闪烁
-        QTimer.singleShot(200, lambda: widget.setStyleSheet(original_stylesheet))
-
-    def _select_char(self):
-        selected_char = self.current_char_options[self.char_pos]
-        self.display.setText(self.display.text() + selected_char)
-        self._go_back_to_grid()
-
-    def _go_back_to_grid(self):
-        self.current_state = self.STATE_GRID
-        self.char_bubble.setProperty("visible", False)
-        # Clear bubble content for a cleaner look
-        for i in reversed(range(self.char_bubble_layout.count())):
-            self.char_bubble_layout.itemAt(i).widget().deleteLater()
-
-    def _backspace(self):
-        self.display.setText(self.display.text()[:-1])
-
-    def _populate_char_bubble(self):
-        for i in reversed(range(self.char_bubble_layout.count())):
-            self.char_bubble_layout.itemAt(i).widget().deleteLater()
-        for char in self.current_char_options:
-            label = QLabel(char)
-            label.setObjectName("CharLabel")
-            label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-            self.char_bubble_layout.addWidget(label)
-        self.char_bubble.show()
-
-    def _update_highlight(self):
-        # Update grid buttons
-        for key, button in self.key_buttons.items():
-            is_hl = (self.current_state == self.STATE_GRID and
-                     self.grid_map[self.grid_pos[0]][self.grid_pos[1]] == key)
-            button.setProperty("highlighted", is_hl)
-
-        # Update char labels
-        if self.current_state == self.STATE_CHAR:
-            for i in range(self.char_bubble_layout.count()):
-                widget = self.char_bubble_layout.itemAt(i).widget()
-                if widget: widget.setProperty("highlighted", i == self.char_pos)
-
-        # This is a more efficient way to re-apply styles in PyQt6
-        self.style().unpolish(self)
-        self.style().polish(self)
-        self.update()
-
-    # Allow moving the frameless window
-    def mousePressEvent(self, event):
-        self.oldPos = event.globalPosition().toPoint()
-
-    def mouseMoveEvent(self, event):
-        delta = event.globalPosition().toPoint() - self.oldPos
+    def mouseMoveEvent(self, e):
+        delta = e.globalPosition().toPoint() - self.oldPos
         self.move(self.x() + delta.x(), self.y() + delta.y())
-        self.oldPos = event.globalPosition().toPoint()
+        self.oldPos = e.globalPosition().toPoint()
+
+
+if __name__ == "__main__":
+    app = QApplication(sys.argv)
+    w = EyeTypingWidget();
+    w.show()
+
+
+    def k(e):
+        m = {Qt.Key.Key_Up: 'UP', Qt.Key.Key_Down: 'DOWN', Qt.Key.Key_Left: 'LEFT', Qt.Key.Key_Right: 'RIGHT',
+             Qt.Key.Key_Return: 'BLINK_TWICE', Qt.Key.Key_Backspace: 'BLINK_THREE'}
+        if e.key() in m: w.on_prediction_received(m[e.key()])
+
+
+    w.keyPressEvent = k
+    sys.exit(app.exec())
