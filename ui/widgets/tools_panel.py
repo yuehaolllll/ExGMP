@@ -1,36 +1,44 @@
-# In ui/widgets/tools_panel.py
+# File: ui/widgets/tools_panel.py
 
-from PyQt6.QtWidgets import QWidget, QVBoxLayout, QPushButton, QFrame, QMenu
-from PyQt6.QtCore import pyqtSignal
+from PyQt6.QtWidgets import QWidget, QVBoxLayout, QPushButton, QMenu
+from PyQt6.QtCore import pyqtSignal, Qt  # <--- 必须导入 Qt
 from PyQt6.QtGui import QAction
 
-# 按钮的样式保持不变，它将被用于我们的主按钮
+# 样式表
 MENU_BUTTON_STYLE = """
     QPushButton {
         background: transparent;
         border: none;
-        border-radius: 1px;
-        padding: 5px 25px 5px 20px; 
+        border-radius: 4px;
+        padding: 8px 10px; 
         text-align: left;
-        font-weight: normal;
-        color: #212121;
+        font-size: 14px;
+        color: #333333;
     }
     QPushButton:hover {
-        background-color: #007BFF;
-        color: #FFFFFF;
+        background-color: #E3F2FD;
+        color: #1565C0;
     }
     QPushButton:pressed {
-        background-color: #0056b3;
+        background-color: #BBDEFB;
     }
     QPushButton:disabled {
         background: transparent;
         color: #BDBDBD;
     }
+    /* 下拉箭头样式 */
+    QPushButton::menu-indicator {
+        subcontrol-origin: padding;
+        subcontrol-position: center right;
+        right: 10px;
+        image: none;
+        width: 0px;
+    }
 """
 
 
 class ToolsPanel(QWidget):
-    # 对外暴露的信号完全不变，所以 MainWindow 不需要任何修改
+    # 信号定义
     eog_acquisition_triggered = pyqtSignal()
     ica_calibration_triggered = pyqtSignal(int)
     ica_toggle_changed = pyqtSignal(bool)
@@ -40,41 +48,62 @@ class ToolsPanel(QWidget):
 
         main_layout = QVBoxLayout(self)
         main_layout.setContentsMargins(5, 5, 5, 5)
-        main_layout.setSpacing(2)
+        main_layout.setSpacing(5)
 
-        # 1. EOG 指南按钮
-        self.eog_button = QPushButton("EOG Acquisition Guide")
+        # --- 1. EOG 指南按钮 ---
+        self.eog_button = QPushButton("👁  EOG Acquisition Guide")
         self.eog_button.setStyleSheet(MENU_BUTTON_STYLE)
-        self.eog_button.setFlat(True)
+
+        # --- 修复点：使用正确的光标枚举值 ---
+        self.eog_button.setCursor(Qt.CursorShape.PointingHandCursor)
+
         self.eog_button.clicked.connect(self.eog_acquisition_triggered.emit)
         main_layout.addWidget(self.eog_button)
 
-        # --- 3. 创建带子菜单的ICA功能按钮 ---
-        # a. 创建主按钮
-        self.ica_menu_button = QPushButton("ICA Artifact Removal")
+        # --- 2. ICA 功能按钮 (带子菜单) ---
+        self.ica_menu_button = QPushButton("🧠  ICA Artifact Removal  ▼")
         self.ica_menu_button.setStyleSheet(MENU_BUTTON_STYLE)
-        self.ica_menu_button.setFlat(True)
+        self.ica_menu_button.setCursor(Qt.CursorShape.PointingHandCursor)  # 同样应用手型光标
 
-        # b. 创建子菜单
+        # 创建子菜单
         self.ica_submenu = QMenu(self)
+        self.ica_submenu.setStyleSheet("""
+            QMenu {
+                background-color: #FFFFFF;
+                border: 1px solid #E0E0E0;
+                padding: 5px;
+            }
+            QMenu::item {
+                padding: 8px 20px;
+                border-radius: 4px;
+            }
+            QMenu::item:selected {
+                background-color: #E3F2FD;
+                color: #1565C0;
+            }
+            QMenu::item:disabled {
+                color: #BDBDBD;
+            }
+        """)
 
-        # c. 创建子菜单中的 "Action"
-        self.calibrate_action = QAction("Calibrate ICA Model", self)
+        # Action 1: 校准
+        self.calibrate_action = QAction("Calibrate ICA Model (30s)", self)
         self.calibrate_action.triggered.connect(self._on_start_calibration)
 
-        self.enable_action = QAction("Enable ICA Cleaning", self)
-        self.enable_action.setCheckable(True)  # 设置为可勾选
+        # Action 2: 启用/禁用
+        self.enable_action = QAction("Enable Real-time Cleaning", self)
+        self.enable_action.setCheckable(True)
         self.enable_action.toggled.connect(self.ica_toggle_changed.emit)
 
-        # d. 将 Action 添加到子菜单
         self.ica_submenu.addAction(self.calibrate_action)
+        self.ica_submenu.addSeparator()
         self.ica_submenu.addAction(self.enable_action)
 
-        # e. 将子菜单关联到主按钮
         self.ica_menu_button.setMenu(self.ica_submenu)
-
-        # f. 将主按钮添加到布局
         main_layout.addWidget(self.ica_menu_button)
+
+        # 添加弹簧
+        main_layout.addStretch()
 
         # 初始化UI状态
         self.update_status(False)
@@ -83,42 +112,36 @@ class ToolsPanel(QWidget):
         calibration_duration_seconds = 30
         self.ica_calibration_triggered.emit(calibration_duration_seconds)
 
-        # 更新UI，进入“正在校准”状态
-        self.calibrate_action.setText("Calibrating...")
+        # 更新UI
+        self.calibrate_action.setText("Calibrating (Please wait)...")
         self.calibrate_action.setEnabled(False)
         self.eog_button.setEnabled(False)
 
     def set_calibration_finished(self):
-        """当ICA模型训练完成后由外部调用"""
         self.calibrate_action.setText("Re-calibrate ICA Model")
         self.calibrate_action.setEnabled(True)
-        self.enable_action.setEnabled(True)  # 启用 "Enable" 选项
+        self.enable_action.setEnabled(True)
+        self.enable_action.setChecked(True)
         self.eog_button.setEnabled(True)
 
     def reset_calibration_ui(self):
-        """重置ICA UI到默认状态 (用于取消或失败)"""
-        self.calibrate_action.setText("Calibrate ICA Model")
+        self.calibrate_action.setText("Calibrate ICA Model (30s)")
+        self.enable_action.setChecked(False)
+        self.enable_action.setEnabled(False)
         self.eog_button.setEnabled(True)
 
+    def set_training_state(self):
+        self.calibrate_action.setText("Computing ICA (Busy)...")
+        self.calibrate_action.setEnabled(False)
+
     def update_status(self, is_connected):
-        """根据连接状态更新整个面板的UI"""
         self.eog_button.setEnabled(is_connected)
-        self.ica_menu_button.setEnabled(is_connected)  # 主按钮只根据连接状态变化
+        self.ica_menu_button.setEnabled(is_connected)
 
         if not is_connected:
-            # 断开连接时，彻底重置所有子菜单项的状态
-            self.calibrate_action.setText("Calibrate ICA Model")
+            self.reset_calibration_ui()
             self.calibrate_action.setEnabled(False)
-            self.enable_action.setEnabled(False)
-            self.enable_action.setChecked(False)
         else:
-            # 刚连接时，启用校准项，但禁用切换项
             self.calibrate_action.setEnabled(True)
-            # 只有当模型校准完成后，enable_action才应该是可用的
-            if self.calibrate_action.text() == "Calibrate ICA Model":
+            if "Calibrate" in self.calibrate_action.text():
                 self.enable_action.setEnabled(False)
-
-    def set_training_state(self):
-        """一个由外部调用的新方法，用于将UI更新为“正在训练”状态"""
-        self.calibrate_action.setText("Training model...")
-        self.calibrate_action.setEnabled(False)  # 保持禁用状态

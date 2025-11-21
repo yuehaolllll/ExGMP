@@ -1,13 +1,16 @@
+# File: ui/widgets/connection_panel.py
+
 from PyQt6.QtWidgets import QWidget, QVBoxLayout, QGroupBox, QRadioButton, QPushButton, QHBoxLayout, QButtonGroup
 from PyQt6.QtCore import pyqtSignal
 from .serial_settings_panel import SerialSettingsPanel
+
 
 class ConnectionPanel(QWidget):
     """
     一个包含所有连接选项的自定义面板，用于嵌入到菜单中。
     """
     # 定义信号，用于通知 MainWindow 用户的操作
-    connect_clicked = pyqtSignal(str, dict)  # 发射连接类型 ("WiFi" or "Bluetooth")
+    connect_clicked = pyqtSignal(str, dict)  # 发射连接类型 ("WiFi" or "Bluetooth") 和参数
     disconnect_clicked = pyqtSignal()
 
     def __init__(self, parent=None):
@@ -23,11 +26,12 @@ class ConnectionPanel(QWidget):
         self.conn_type_group = QButtonGroup(self)
 
         self.wifi_radio = QRadioButton("WiFi")
-        self.wifi_radio.setChecked(True)  # 默认选中 WiFi
         self.bt_radio = QRadioButton("Bluetooth")
         self.serial_radio = QRadioButton("Serial (UART)")
 
-        # 将按钮添加到 QButtonGroup，这样我们就可以轻松获取选中的那个
+        self.wifi_radio.setChecked(True)  # 默认选中 WiFi
+
+        # 将按钮添加到 QButtonGroup
         self.conn_type_group.addButton(self.wifi_radio)
         self.conn_type_group.addButton(self.bt_radio)
         self.conn_type_group.addButton(self.serial_radio)
@@ -37,35 +41,42 @@ class ConnectionPanel(QWidget):
         type_layout.addWidget(self.serial_radio)
         type_group.setLayout(type_layout)
 
+        # --- 串口设置面板 ---
         self.serial_settings = SerialSettingsPanel()
-        self.serial_settings.setVisible(False)  # 初始时隐藏
 
         # --- 操作按钮 ---
         button_layout = QHBoxLayout()
         self.connect_btn = QPushButton("Connect")
+        # 默认样式强调连接
+        self.connect_btn.setStyleSheet("font-weight: bold; background-color: #E0E0E0;")
         self.disconnect_btn = QPushButton("Disconnect")
+
         button_layout.addWidget(self.connect_btn)
         button_layout.addWidget(self.disconnect_btn)
 
-        # --- 连接内部信号 ---
-        self.connect_btn.clicked.connect(self._on_connect)
-        self.disconnect_btn.clicked.connect(self.disconnect_clicked.emit)
-
-        # 将所有部分添加到主布局
+        # --- 组装布局 ---
         main_layout.addWidget(type_group)
         main_layout.addWidget(self.serial_settings)
         main_layout.addLayout(button_layout)
 
-        # 1. 临时显示所有控件，以便布局系统计算出完全展开后的大小
-        self.serial_settings.setVisible(True)
-        # 2. 获取这个“最大尺寸”
-        expanded_size = self.sizeHint()
-        # 3. 将这个尺寸设置为本控件的“最小尺寸”
-        self.setMinimumSize(expanded_size)
-        # 4. 现在，将串口设置恢复为初始的隐藏状态
-        self.serial_settings.setVisible(False)
+        # --- 逻辑连接 ---
+        self.connect_btn.clicked.connect(self._on_connect)
+        self.disconnect_btn.clicked.connect(self.disconnect_clicked.emit)
 
+        # 只有选中 Serial 时才显示设置面板
         self.serial_radio.toggled.connect(self.serial_settings.setVisible)
+
+        # --- 核心优化：防止菜单大小抖动 ---
+        # 1. 先让所有控件显示出来
+        self.serial_settings.setVisible(True)
+        # 2. 强制触发布局计算，确保获取的 sizeHint 是准确的
+        self.adjustSize()
+        # 3. 获取展开后的大小
+        expanded_size = self.sizeHint()
+        # 4. 锁定最小尺寸，这样即使隐藏了设置面板，菜单也不会突然变小
+        self.setMinimumSize(expanded_size)
+        # 5. 恢复初始状态
+        self.serial_settings.setVisible(False)
 
         # 初始化按钮状态
         self.update_status(False)
@@ -81,8 +92,12 @@ class ConnectionPanel(QWidget):
 
         if conn_type == "Serial (UART)":
             params = self.serial_settings.get_settings()
-            if not params.get("port") or params.get("port") == "No ports found":
+            # 进行简单的校验
+            port = params.get("port")
+            if not port or port == "No ports found":
+                # 这里可以通过 MainWindow 弹窗提示，或者简单的在控制台打印
                 print("Error: No valid COM port selected.")
+                # 可以选择让按钮闪烁一下表示错误（可选）
                 return
 
         # 发射信号，附带类型和参数字典
@@ -90,12 +105,15 @@ class ConnectionPanel(QWidget):
 
     def update_status(self, is_connected):
         """
-        一个公开方法，由 MainWindow 调用，用于根据连接状态更新面板UI。
+        由 MainWindow 调用，更新面板状态
         """
         self.connect_btn.setEnabled(not is_connected)
         self.disconnect_btn.setEnabled(is_connected)
 
-        # 当已连接时，禁用类型选择，防止中途更改
+        # 连接中禁止切换类型
         self.wifi_radio.setEnabled(not is_connected)
         self.bt_radio.setEnabled(not is_connected)
         self.serial_radio.setEnabled(not is_connected)
+
+        # 连接中禁止修改串口设置
+        self.serial_settings.setEnabled(not is_connected)

@@ -1,8 +1,9 @@
-# In ui/main_window.py
+# File: ui/main_window.py
+
 from PyQt6.QtWidgets import (QMainWindow, QWidget, QHBoxLayout, QVBoxLayout, QFileDialog,
                              QSplitter, QDialog, QWidgetAction, QMessageBox, QStackedWidget)
 from PyQt6.QtCore import QThread, QObject, pyqtSignal, Qt, pyqtSlot, QTimer, QMetaObject, Q_ARG
-from PyQt6.QtGui import QAction, QActionGroup, QIcon, QPixmap, QGuiApplication
+from PyQt6.QtGui import QAction, QIcon, QPixmap, QGuiApplication
 import pyqtgraph as pg
 from scipy.io import savemat, loadmat
 import numpy as np
@@ -12,11 +13,9 @@ import sys
 # 导入所有模块
 from networking.data_receiver import DataReceiver
 from processing.data_processor import DataProcessor
-from ui.widgets.control_panel import ControlPanel
 from ui.widgets.time_domain_widget import TimeDomainWidget
 from ui.widgets.frequency_domain_widget import FrequencyDomainWidget
 from .widgets.review_dialog import ReviewDialog
-from networking.data_receiver import HOST, PORT
 from .widgets.band_power_widget import BandPowerWidget
 from networking.bluetooth_receiver import BluetoothDataReceiver
 from .widgets.settings_panel import SettingsPanel
@@ -28,19 +27,23 @@ from processing.eog_model_controller import ModelController
 from ui.widgets.eye_typing_widget import EyeTypingWidget
 from processing.ica_processor import ICAProcessor
 from .widgets.ica_component_dialog import ICAComponentDialog
+from .widgets.header_bar import HeaderStatusWidget
+from ui.widgets.recording_panel import RecordingPanel
+from ui.widgets.display_filter_panel import DisplayFilterPanel
+from ui.widgets.channel_settings_panel import ChannelSettingsPanel
+
 
 def resource_path(relative_path):
     """ Get absolute path to resource, works for dev and for PyInstaller """
     try:
-        # PyInstaller creates a temp folder and stores path in _MEIPASS
         base_path = sys._MEIPASS
     except Exception:
         base_path = os.path.abspath(".")
-
     return os.path.join(base_path, relative_path)
 
+
 class FileSaver(QObject):
-    finished = pyqtSignal(str) # Signal to report status back
+    finished = pyqtSignal(str)
 
     def save(self, filename, data_dict):
         try:
@@ -55,7 +58,6 @@ class FileLoader(QObject):
 
     def load(self, filename):
         try:
-            # squeeze_me=True 对于简化加载至关重要
             mat = loadmat(filename, squeeze_me=True)
             data = mat['data']
             sampling_rate = float(mat['sampling_rate'])
@@ -66,28 +68,19 @@ class FileLoader(QObject):
                 channel_names = list(channel_names)
 
             clean_markers = None
-
-            # --- 优先检查新的扁平格式 ---
             if 'marker_timestamps' in mat and 'marker_labels' in mat:
                 print("Info: Loading new flat marker format.")
-                # 数据已经是干净的 1D 数组，直接使用
                 flat_timestamps = np.atleast_1d(mat['marker_timestamps'])
                 flat_labels = np.atleast_1d(mat['marker_labels'])
-
                 clean_markers = {
                     'timestamps': flat_timestamps,
-                    'labels': [str(item) for item in flat_labels]  # 确保标签是字符串
+                    'labels': [str(item) for item in flat_labels]
                 }
-
-            # --- 兼容旧格式的后备逻辑 ---
             elif 'markers' in mat:
                 print("Warning: Loading legacy nested marker format.")
                 markers_struct = mat['markers']
-
-                # 在旧格式中，数据被包裹在一个结构里
                 flat_timestamps = np.atleast_1d(markers_struct['timestamps'])
                 flat_labels = np.atleast_1d(markers_struct['labels'])
-
                 clean_markers = {
                     'timestamps': flat_timestamps,
                     'labels': [str(item) for item in flat_labels]
@@ -103,15 +96,15 @@ class FileLoader(QObject):
                 'sampling_rate': sampling_rate,
                 'freqs': frequencies,
                 'mags': magnitudes,
-                'markers': clean_markers,  # 使用我们处理好的干净数据
+                'markers': clean_markers,
                 'filename': filename.split('/')[-1],
                 'channels': channel_names
             }
             self.load_finished.emit(result)
-
         except Exception as e:
             print(f"Error loading file: {e}")
             self.load_finished.emit({'error': str(e)})
+
 
 class MainWindow(QMainWindow):
     sample_rate_changed = pyqtSignal(int)
@@ -121,7 +114,6 @@ class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
 
-        # --- Imports and basic window setup (no changes) ---
         from .widgets.refined_ble_scan_dialog import RefinedBleScanDialog
         from .widgets.splash_widget import SplashWidget
         from processing.acquisition_controller import AcquisitionController
@@ -130,34 +122,27 @@ class MainWindow(QMainWindow):
         app_icon = QIcon(resource_path("icons/logo.png"))
         self.setWindowIcon(app_icon)
         self.setWindowTitle("ExGMP")
+
+        # 全局配置 pyqtgraph
         pg.setConfigOption('background', '#FFFFFF')
         pg.setConfigOption('foreground', '#333333')
 
-        # --- 【核心修改】: 严格遵循 初始化 -> 创建UI -> 连接 的顺序 ---
-
-        # 1. 初始化所有后台处理器和线程
-        self.setup_threads()  # self.data_processor is created here
-        self.ica_thread = QThread()
-        self.ica_processor = ICAProcessor()
-        self.ica_processor.moveToThread(self.ica_thread)
-        self.eog_model_controller_thread = QThread()
-        self.eog_model_controller = ModelController()
-        self.eog_model_controller.moveToThread(self.eog_model_controller_thread)
+        # 1. 初始化后台线程
+        self.setup_threads()
         self.acquisition_controller = AcquisitionController()
 
-        # 2. 创建所有UI组件
+        # 2. 创建 UI
         self.stacked_widget = QStackedWidget()
         self.setCentralWidget(self.stacked_widget)
         self.splash_widget = SplashWidget(resource_path("icons/splash_animation.gif"))
         self.stacked_widget.addWidget(self.splash_widget)
 
-        main_ui_widget = QWidget()
-        self._setup_main_ui(main_ui_widget)  # This now ONLY sets up the main layout
-        self.stacked_widget.addWidget(main_ui_widget)
+        main_plot_widget = self._setup_main_ui()
+        self.stacked_widget.addWidget(main_plot_widget)
 
-        self._create_menu_bar()  # Explicitly create the menu bar and its panels here
+        self._create_menu_bar()
 
-        # 3. 初始化对话框和状态变量
+        # 3. 初始化对话框与状态
         self.ble_scan_dialog = RefinedBleScanDialog(self)
         self.review_dialog = None
         self.eye_typing_dialog = None
@@ -167,154 +152,126 @@ class MainWindow(QMainWindow):
         self.is_shutting_down = False
         self.current_connection_message = "Disconnected"
 
-        # 4. 连接所有信号和槽
+        # 4. 连接信号
         self.setup_connections()
 
-        # 5. 启动持久运行的后台线程
+        # 5. 启动持久线程
         self.ica_thread.start()
         self.eog_model_controller_thread.start()
 
         self.update_ui_on_connection(False)
 
-    def _setup_main_ui(self, parent_widget):
-        """
-        一个新方法，用于构建主交互界面。
-        我们将原来 __init__ 中的UI构建代码移到了这里。
-        """
-        self.control_panel = ControlPanel()
+    def _setup_main_ui(self):
+        plot_container = QWidget()
+        container_layout = QHBoxLayout(plot_container)
+        container_layout.setContentsMargins(5, 5, 5, 5)
+
         self.time_domain_widget = TimeDomainWidget(self.data_processor)
         self.freq_domain_widget = FrequencyDomainWidget()
         self.band_power_widget = BandPowerWidget()
 
-        main_layout = QHBoxLayout(parent_widget)  # 使用传入的父控件
-        plot_layout = QVBoxLayout()
-        bottom_splitter = QSplitter(Qt.Orientation.Horizontal)
-        bottom_splitter.addWidget(self.freq_domain_widget)
-        bottom_splitter.addWidget(self.band_power_widget)
-        bottom_splitter.setSizes([700, 300])
-        plot_layout.addWidget(self.time_domain_widget, 4)
-        plot_layout.addWidget(bottom_splitter, 1)
-        main_layout.addWidget(self.control_panel, 1)
-        main_layout.addLayout(plot_layout, 4)
+        right_splitter = QSplitter(Qt.Orientation.Vertical)
+        right_splitter.addWidget(self.freq_domain_widget)
+        right_splitter.addWidget(self.band_power_widget)
+        right_splitter.setSizes([600, 400])
 
-        # 菜单栏的创建现在也属于主UI的一部分
-        #self._create_menu_bar()
+        main_splitter = QSplitter(Qt.Orientation.Horizontal)
+        main_splitter.addWidget(self.time_domain_widget)
+        main_splitter.addWidget(right_splitter)
+        main_splitter.setSizes([900, 300])
+
+        container_layout.addWidget(main_splitter)
+        return plot_container
 
     def show_and_start_splash(self):
-        """
-        一个由 main.py 调用的新方法，用于显示窗口并开始启动流程。
-        """
-
-        # 1. 获取可用的屏幕尺寸
         available_geometry = QGuiApplication.primaryScreen().availableGeometry()
-        screen_width = available_geometry.width()
-        screen_height = available_geometry.height()
+        w, h = available_geometry.width(), available_geometry.height()
 
-        # 2. 找到屏幕宽度和高度中较小的一边
-        shorter_side = min(screen_width, screen_height)
+        # 智能计算窗口尺寸 (4:3)
+        target_h = int(min(w, h) * 0.85)
+        target_w = int(target_h * 1.33)
+        self.resize(max(target_w, 1100), max(target_h, 750))
 
-        # 3. 基于较小的一边，计算一个合适的“类正方形”尺寸
-        # 我们可以让宽度稍微大一些，例如 宽高比为 4:3 或 5:4
-        scale_factor = 0.9  # 使用屏幕较小边的 90%，您可以调整这个比例
-        window_height = int(shorter_side * scale_factor)
-        window_width = int(window_height * (4 / 3))  # 设置宽高比为 4:3
+        center = available_geometry.center()
+        self.move(center.x() - self.width() // 2, center.y() - self.height() // 2)
 
-        # 4. 确保计算出的尺寸不小于我们设定的最小尺寸
-        min_w, min_h = self.minimumSize().width(), self.minimumSize().height()
-        final_width = max(window_width, min_w)
-        final_height = max(window_height, min_h)
-
-        self.resize(final_width, final_height)
-
-        # 3. 将窗口移动到屏幕中央
-        # 这个方法比之前的 frameGeometry() 更简洁可靠
-        window_center_point = available_geometry.center()
-        self.move(int(window_center_point.x() - self.width() / 2),
-                  int(window_center_point.y() - self.height() / 2))
-
-        # 2. 显示窗口
         self.show()
-
-        # 3. 开始播放动画
         self.splash_widget.start_animation()
-
-        # 4. 设置定时器，在4秒后切换到主界面
         QTimer.singleShot(4000, self.switch_to_main_ui)
 
     def switch_to_main_ui(self):
-        """切换到主交互界面"""
         self.splash_widget.stop_animation()
-        self.stacked_widget.setCurrentIndex(1)  # 切换到索引为1的Widget
+        self.stacked_widget.setCurrentIndex(1)
 
     def _create_menu_bar(self):
-        # 获取 QMainWindow 默认的菜单栏
         menu_bar = self.menuBar()
-        # connection menu
-        connection_menu = menu_bar.addMenu("Connection")
+        menu_bar.setCornerWidget(None, Qt.Corner.TopLeftCorner)
 
-        # 创建我们的自定义连接面板实例
+        # Connection
+        conn_menu = menu_bar.addMenu("Connection")
         self.connection_panel = ConnectionPanel(self)
-
-        # 将面板的信号直接连接到 MainWindow 的槽函数
         self.connection_panel.connect_clicked.connect(self.on_connect_clicked)
         self.connection_panel.disconnect_clicked.connect(self.stop_session)
+        conn_action = QWidgetAction(self)
+        conn_action.setDefaultWidget(self.connection_panel)
+        conn_menu.addAction(conn_action)
 
-        # 创建一个 QWidgetAction 来容纳我们的面板
-        conn_widget_action = QWidgetAction(self)
-        conn_widget_action.setDefaultWidget(self.connection_panel)
-
-        # 将这个特殊的 action 添加到菜单
-        connection_menu.addAction(conn_widget_action)
-
-        # 创建 "Settings" 菜单
-        # --- 2. 新的、交互式的 Settings 菜单 ---
+        # Settings
         settings_menu = menu_bar.addMenu("Settings")
-
-        # 创建我们的自定义设置面板实例
         self.settings_panel = SettingsPanel(default_rate=1000, default_frames=50, default_channels=8)
+        set_action = QWidgetAction(self)
+        set_action.setDefaultWidget(self.settings_panel)
+        settings_menu.addAction(set_action)
 
-        # 创建一个 QWidgetAction
-        widget_action = QWidgetAction(self)
-        # 将我们的面板设置为这个 action 的默认 Widget
-        widget_action.setDefaultWidget(self.settings_panel)
-
-        # 将这个特殊的 action 添加到 Settings 菜单
-        settings_menu.addAction(widget_action)
-
-        # --- 3. 连接来自新面板的信号 ---
-        # 注意：这里的信号是 self.settings_panel 发出的，而不是旧的 QActionGroup
         self.settings_panel.sample_rate_changed.connect(self._on_sample_rate_changed)
         self.settings_panel.frames_per_packet_changed.connect(self._on_frames_changed)
         self.settings_panel.num_channels_changed.connect(self._on_num_channels_changed)
+        self.settings_panel.gain_changed.connect(self.on_gain_setting_changed)
 
+        # Filter
+        filter_menu = menu_bar.addMenu("Filter")
+        self.display_filter_panel = DisplayFilterPanel(self)
+        filter_action = QWidgetAction(self)
+        filter_action.setDefaultWidget(self.display_filter_panel)
+        filter_menu.addAction(filter_action)
+
+        # Channels
+        ch_menu = menu_bar.addMenu("Channels")
+        self.channel_settings_panel = ChannelSettingsPanel(parent=self)
+        ch_action = QWidgetAction(self)
+        ch_action.setDefaultWidget(self.channel_settings_panel)
+        ch_menu.addAction(ch_action)
+
+        # Recording
+        rec_menu = menu_bar.addMenu("Recording")
+        self.recording_panel = RecordingPanel(self)
+        rec_action = QWidgetAction(self)
+        rec_action.setDefaultWidget(self.recording_panel)
+        rec_menu.addAction(rec_action)
+
+        # Tools
         tools_menu = menu_bar.addMenu("Tools")
         self.tools_panel = ToolsPanel(self)
-        tools_widget_action = QWidgetAction(self)
-        tools_widget_action.setDefaultWidget(self.tools_panel)
-        tools_menu.addAction(tools_widget_action)
+        tools_action = QWidgetAction(self)
+        tools_action.setDefaultWidget(self.tools_panel)
+        tools_menu.addAction(tools_action)
 
+        # Application
         app_menu = menu_bar.addMenu("Application")
-        self.eye_typing_action = QAction("Eye Typing", self)
-        self.eye_typing_action.setEnabled(False)  # Disabled until connected
+        self.eye_typing_action = QAction("⌨️  Eye Typing", self)
+        self.eye_typing_action.setEnabled(False)
         self.eye_typing_action.triggered.connect(self._launch_eye_typer)
         app_menu.addAction(self.eye_typing_action)
 
+        # Help
         help_menu = menu_bar.addMenu("Help")
         about_action = QAction("About ExGMP", self)
         about_action.triggered.connect(self.show_about_dialog)
         help_menu.addAction(about_action)
 
-    def _on_connect_action(self):
-        # 获取当前选中的连接类型
-        selected_action = self.conn_type_group.checkedAction()
-        if selected_action:
-            conn_type = selected_action.data()
-            self.connect_action_triggered.emit(conn_type)
-
-    def update_menu_actions(self, is_connected):
-        """根据连接状态更新 Connect/Disconnect 菜单项的可用性"""
-        self.connect_action.setEnabled(not is_connected)
-        self.disconnect_action.setEnabled(is_connected)
+        # Status Bar (Right Corner)
+        self.header_bar = HeaderStatusWidget()
+        menu_bar.setCornerWidget(self.header_bar, Qt.Corner.TopRightCorner)
 
     @pyqtSlot(int)
     def _on_sample_rate_changed(self, rate):
@@ -327,60 +284,73 @@ class MainWindow(QMainWindow):
         print(f"Menu Event: Frames per packet changed to {frames}.")
 
     def setup_threads(self):
-        # 只创建和配置数据处理器线程
+        # Data Processor Thread
         self.processor_thread = QThread()
         self.data_processor = DataProcessor()
         self.data_processor.moveToThread(self.processor_thread)
         self.processor_thread.started.connect(self.data_processor.start)
 
+        # ICA Thread
+        self.ica_thread = QThread()
+        self.ica_processor = ICAProcessor()
+        self.ica_processor.moveToThread(self.ica_thread)
+
+        # Model Controller Thread
+        self.eog_model_controller_thread = QThread()
+        self.eog_model_controller = ModelController()
+        self.eog_model_controller.moveToThread(self.eog_model_controller_thread)
+
     def setup_connections(self):
-        # Control Panel -> MainWindow / DataProcessor
-        self.control_panel.open_file_clicked.connect(self.open_file)
-        # self.control_panel.start_recording_clicked.connect(self.data_processor.start_recording)
-        self.control_panel.start_recording_clicked.connect(self._on_start_recording_clicked)
-        self.control_panel.stop_recording_clicked.connect(self.data_processor.stop_recording)
-        self.control_panel.add_marker_clicked.connect(self.data_processor.add_marker)
-        # Control Panel -> TimeDomainWidget / DataProcessor (Filters, etc.)
-        self.control_panel.channel_visibility_changed.connect(self.time_domain_widget.toggle_visibility)
-        self.control_panel.channel_scale_changed.connect(self.time_domain_widget.adjust_scale)
-        self.control_panel.notch_filter_changed.connect(self.data_processor.update_notch_filter)
-        self.control_panel.plot_duration_changed.connect(self.time_domain_widget.set_plot_duration)
-        self.control_panel.filter_settings_changed.connect(self.data_processor.update_filter_settings)
+        # Panels -> Actions
+        self.recording_panel.open_file_clicked.connect(self.open_file)
+        self.recording_panel.start_recording_clicked.connect(self._on_start_recording_clicked)
+        self.recording_panel.stop_recording_clicked.connect(self.data_processor.stop_recording)
+        self.recording_panel.add_marker_clicked.connect(self.data_processor.add_marker)
+
+        self.display_filter_panel.plot_duration_changed.connect(self.time_domain_widget.set_plot_duration)
+        self.display_filter_panel.filter_settings_changed.connect(self.data_processor.update_filter_settings)
+        self.display_filter_panel.notch_filter_changed.connect(self.data_processor.update_notch_filter)
+
+        self.channel_settings_panel.channel_visibility_changed.connect(self.time_domain_widget.toggle_visibility)
+        self.channel_settings_panel.channel_name_changed.connect(self.time_domain_widget.update_channel_name)
+        self.channel_settings_panel.channel_name_changed.connect(self.freq_domain_widget.update_channel_name)
+        self.channel_settings_panel.channel_name_changed.connect(self.data_processor.update_single_channel_name)
+
         # DataProcessor -> UI
         self.data_processor.recording_finished.connect(self.save_recording_data)
-        #self.data_processor.time_data_ready.connect(self.time_domain_widget.update_plot)
         self.data_processor.fft_data_ready.connect(self.freq_domain_widget.update_realtime_fft)
-        self.data_processor.stats_ready.connect(self.control_panel.update_stats)
+        self.data_processor.stats_ready.connect(self.header_bar.update_stats)
         self.data_processor.marker_added_live.connect(self.time_domain_widget.show_live_marker)
         self.data_processor.band_power_ready.connect(self.band_power_widget.update_plot)
-        # Settings Menu -> DataProcessor / TimeDomainWidget
+        self.data_processor.filtered_data_ready.connect(self.eog_model_controller.process_data_chunk)
+        self.data_processor.calibration_data_ready.connect(self._on_calibration_data_ready)
+
+        # Settings Signals -> Processor & Widgets
         self.sample_rate_changed.connect(self.data_processor.set_sample_rate)
         self.sample_rate_changed.connect(self.time_domain_widget.set_sample_rate)
-        # Edit channel names
-        self.control_panel.channel_name_changed.connect(self.time_domain_widget.update_channel_name)
-        self.control_panel.channel_name_changed.connect(self.freq_domain_widget.update_channel_name)
-        self.control_panel.channel_name_changed.connect(self.data_processor.update_single_channel_name)
+        self.sample_rate_changed.connect(self.eog_model_controller.set_input_sample_rate)
 
+        self.num_channels_changed.connect(self.channel_settings_panel.reconfigure_channels)
+        self.num_channels_changed.connect(self.time_domain_widget.reconfigure_channels)
+        self.num_channels_changed.connect(self.freq_domain_widget.reconfigure_channels)
+        self.num_channels_changed.connect(self.data_processor.set_num_channels)
+
+        # Tools -> Controllers
         self.tools_panel.eog_acquisition_triggered.connect(self.acquisition_controller.start)
         self.tools_panel.ica_toggle_changed.connect(self.data_processor.toggle_ica)
         self.tools_panel.ica_calibration_triggered.connect(self.data_processor.start_ica_calibration)
-        self.data_processor.calibration_data_ready.connect(self._on_calibration_data_ready)
+
+        # ICA & Model
         self.ica_processor.training_finished.connect(self._on_ica_training_finished)
         self.ica_processor.training_failed.connect(self._on_ica_training_failed)
 
+        # Acquisition Controller
         self.acquisition_controller.started.connect(self._on_acquisition_started)
         self.acquisition_controller.finished.connect(self._on_acquisition_finished)
         self.acquisition_controller.start_recording_signal.connect(self.data_processor.start_recording)
         self.acquisition_controller.stop_recording_signal.connect(self.data_processor.stop_recording)
         self.acquisition_controller.add_marker_signal.connect(self.data_processor.add_marker)
-        self.data_processor.filtered_data_ready.connect(self.eog_model_controller.process_data_chunk)
 
-        self.num_channels_changed.connect(self.control_panel.reconfigure_channels)
-        self.num_channels_changed.connect(self.time_domain_widget.reconfigure_channels)
-        self.num_channels_changed.connect(self.freq_domain_widget.reconfigure_channels)
-        #self.num_channels_changed.connect(self.band_power_widget.reconfigure_channels)
-        self.num_channels_changed.connect(self.data_processor.set_num_channels)
-        self.settings_panel.gain_changed.connect(self.on_gain_setting_changed)
     @pyqtSlot(int)
     def _on_num_channels_changed(self, num_channels):
         print(f"MainWindow: Detected channel count change to {num_channels}. Broadcasting...")
@@ -389,11 +359,10 @@ class MainWindow(QMainWindow):
     @pyqtSlot(float)
     def on_gain_setting_changed(self, new_gain):
         print(f"Menu Event: Gain changed to x{new_gain}")
-        # 如果数据接收器实例已存在 (即在连接状态下)，则立即更新它的增益
         if self.receiver_instance:
             self.receiver_instance.set_gain(new_gain)
 
-    @pyqtSlot(str, dict)  # 明确指定接收的参数类型
+    @pyqtSlot(str, dict)
     def on_connect_clicked(self, conn_type, params):
         if self.is_session_running: return
 
@@ -411,17 +380,13 @@ class MainWindow(QMainWindow):
 
     @pyqtSlot(str, str)
     def on_ble_device_selected(self, name, address):
-        """
-        这个槽函数在蓝牙扫描对话框中成功选择一个设备后被调用。
-        """
         print(f"Device selected: {name} ({address})")
-        # 使用获取到的设备地址，启动一个蓝牙会话
         self.start_session("Bluetooth", address=address)
 
     def open_file(self):
         filename, _ = QFileDialog.getOpenFileName(self, "Open EEG Data File", "", "MATLAB files (*.mat)")
         if filename:
-            self.control_panel.update_status(f"Loading {filename.split('/')[-1]}...")
+            self.header_bar.update_status_message(f"Loading {filename.split('/')[-1]}...")
             self.load_thread = QThread()
             self.file_loader = FileLoader()
             self.file_loader.moveToThread(self.load_thread)
@@ -432,87 +397,73 @@ class MainWindow(QMainWindow):
 
     def on_file_loaded(self, result):
         if 'error' in result:
-            self.control_panel.update_status(f"Error: {result['error']}")
+            self.header_bar.update_status_message(f"Error: {result['error']}")
         else:
-            if not self.review_dialog:  # 如果对话框不存在则创建
+            if not self.review_dialog:
                 self.review_dialog = ReviewDialog(self)
             self.review_dialog.load_and_display(result)
 
             if self.is_session_running:
-                # 从 SettingsPanel 获取当前会话的真实通道数
-                current_session_channels = self.settings_panel.get_current_channels()  # 您可能需要为SettingsPanel添加这个方法
+                current_ch = self.settings_panel.get_current_channels()
+                self.freq_domain_widget.reconfigure_channels(current_ch)
 
-                print(f"Restoring FrequencyDomainWidget to {current_session_channels} channels after file review.")
-
-                # 强制重新配置频域图，使其与 DataProcessor 的状态再次同步
-                self.freq_domain_widget.reconfigure_channels(current_session_channels)
-
-        # # 无论加载成功与否，都要根据 self.is_session_running 恢复状态栏
-        # if self.is_session_running:
-        #     # 如果会话仍在运行，则将状态恢复为 "Connected"
-        #     self.control_panel.update_status(f"Connected to {HOST}:{PORT}")
-        # else:
-        #     # 否则，状态应为 "Disconnected"
-        #     self.control_panel.update_status("Disconnected")
-        self.control_panel.update_status(self.current_connection_message)
-
+        self.header_bar.update_status_message(self.current_connection_message)
         self.load_thread.quit()
 
     def start_session(self, conn_type, address=None, params=None):
         if self.is_session_running: return
-        current_channels = self.settings_panel.channels_button_group.checkedId()
+
+        # 1. 重置 UI 状态
+        current_channels = self.settings_panel.get_current_channels()
         self.time_domain_widget.reconfigure_channels(current_channels)
         self.freq_domain_widget.reconfigure_channels(current_channels)
         self.band_power_widget.clear_plots()
 
-        current_channels = self.settings_panel.channels_button_group.checkedId()
+        # 2. 计算参数
         frame_size = 3 + (current_channels * 3)
-        # 假设转换常量固定 (如果不同设备不同, 也应加入设置)
         V_REF = 4.5
         current_gain = self.settings_panel.get_current_gain()
-        GAIN = 12.0
 
+        # 3. 实例化 Receiver
         if conn_type == "WiFi":
-            # self.receiver_instance = DataReceiver(
-            #     num_channels=current_channels, frame_size=frame_size, v_ref=V_REF, gain=GAIN
-            # )
             self.receiver_instance = DataReceiver(
-                num_channels=8,  # 传入硬件的总通道数，例如8
-                v_ref=V_REF, gain=current_gain
+                num_channels=current_channels, v_ref=V_REF, gain=current_gain
             )
-            #self.receiver_instance.connection_status.connect(self.on_wifi_connected_send_commands)
         elif conn_type == "Bluetooth":
             self.receiver_instance = BluetoothDataReceiver(
-                device_address=address, num_channels=current_channels, frame_size=frame_size, v_ref=V_REF, gain=current_gain
+                device_address=address, num_channels=current_channels,
+                frame_size=frame_size, v_ref=V_REF, gain=current_gain
             )
         elif conn_type == "Serial (UART)":
-            if not params:
-                print("Error: Serial connection requires parameters.")
-                return
-            self.receiver_instance = SerialDataReceiver(port=params["port"], baudrate=params["baudrate"],
-                                                        num_channels=current_channels, frame_size=frame_size, v_ref=V_REF, gain=current_gain)
+            if not params: return
+            self.receiver_instance = SerialDataReceiver(
+                port=params["port"], baudrate=params["baudrate"],
+                num_channels=current_channels, frame_size=frame_size,
+                v_ref=V_REF, gain=current_gain
+            )
         else:
             return
 
-        # 将信号连接的逻辑放在实例化之后
+        # 4. 连接信号
         if conn_type == "WiFi":
-            # 对于Wi-Fi，我们监听连接成功信号，然后由主窗口发送命令
-            self.receiver_instance.connection_status.connect(self.on_wifi_connected_send_commands)
+            # 单次连接，防止重复触发
+            self.receiver_instance.connection_status.connect(
+                self.on_wifi_connected_send_commands,
+                type=Qt.ConnectionType.SingleShotConnection
+            )
 
-        # --- 在这里，在实例被创建后，立即连接它的信号 ---
         self.receiver_instance.connection_status.connect(self.on_connection_status_changed)
         self.receiver_instance.raw_data_received.connect(self.data_processor.process_raw_data)
         self.frames_per_packet_changed.connect(self.receiver_instance.set_frames_per_packet)
 
-        current_frames = self.settings_panel.frames_button_group.checkedId()
+        # 5. 应用初始设置
+        current_frames = self.settings_panel.get_current_frames()
         self.receiver_instance.set_frames_per_packet(current_frames)
 
+        # 6. 启动线程
         self.receiver_thread = QThread()
         self.receiver_instance.moveToThread(self.receiver_thread)
         self.receiver_thread.started.connect(self.receiver_instance.run)
-
-        # --- 关键修复 1: 监听线程的结束信号 ---
-        # 当线程真正结束后，我们再安全地清理对象
         self.receiver_thread.finished.connect(self.on_receiver_thread_finished)
 
         self.receiver_thread.start()
@@ -520,79 +471,60 @@ class MainWindow(QMainWindow):
         self.time_domain_widget.start_updates()
 
     def stop_session(self, blocking=False):
-        """
-        停止所有会话相关的活动。
-        此方法经过重新设计，可以安全地多次调用。
-        :param blocking: 如果为True，将阻塞并等待线程完全结束。
-        """
-        # 移除了 'if not self.is_session_running: return'
-        # 确保即使用户先点击断开再关闭窗口，清理逻辑也能在 closeEvent 中完整执行。
-
-        # 仅在会话首次停止时打印消息，避免重复输出
+        """停止所有会话活动"""
         self.time_domain_widget.stop_updates()
         if self.is_session_running:
             print("Stopping session...")
 
-        self.is_session_running = False  # 立即更新状态
-
-        # 1. 立即更新UI并断开信号，防止任何排队的信号在UI销毁后被触发
+        self.is_session_running = False
         self.update_ui_on_connection(False)
-        self.control_panel.update_status("Disconnecting...")
+        self.header_bar.update_status_message("Disconnecting...")
 
+        # 断开信号
         if self.receiver_instance:
             try:
                 self.receiver_instance.connection_status.disconnect(self.on_connection_status_changed)
                 self.receiver_instance.raw_data_received.disconnect(self.data_processor.process_raw_data)
             except TypeError:
-                pass  # 信号可能已经断开，忽略错误
+                pass
 
         if self.data_processor:
             try:
-                # 这个断开对于修复 update_stats 错误至关重要
-                self.data_processor.stats_ready.disconnect(self.control_panel.update_stats)
+                self.data_processor.stats_ready.disconnect(self.header_bar.update_stats)
             except TypeError:
                 pass
 
-        # 2. 停止数据处理器
+        # 停止线程
         if self.processor_thread and self.processor_thread.isRunning():
-            self.data_processor.stop()  # 停止内部的Timers
+            self.data_processor.stop()
             self.processor_thread.quit()
             if blocking: self.processor_thread.wait()
 
-        # 3. 停止数据接收器
         if self.receiver_instance:
             self.receiver_instance.stop()
 
-        # 4. 请求接收器线程退出
         if self.receiver_thread and self.receiver_thread.isRunning():
             self.receiver_thread.quit()
             if blocking: self.receiver_thread.wait(2000)
 
-        if not blocking:
-            print("Non-blocking stop initiated.")
-
     def on_receiver_thread_finished(self):
-        """
-        这个槽函数只会在 receiver_thread 的事件循环完全退出后才被调用。
-        这是进行最终清理和UI更新的最安全的地方。
-        """
-        if self.is_shutting_down:
-            print("Receiver thread finished during shutdown, skipping final UI updates.")
-            return
-        print("Receiver thread has finished.")
+        """线程结束回调"""
+        if self.is_shutting_down: return
+        print("Receiver thread finished.")
         self.receiver_instance = None
         self.receiver_thread = None
 
-        # 在所有后台活动都已确认停止后，最后一次、安全地更新UI
         self.current_connection_message = "Disconnected"
         self.update_ui_on_connection(False)
-        self.control_panel.update_status("Disconnected")
+        self.header_bar.update_status_message("Disconnected")
 
     @pyqtSlot(str)
     def on_connection_status_changed(self, message):
         is_connected = "Connected" in message or "已连接" in message
-        is_disconnected = "Disconnected" in message or "已断开" in message or "连接错误" in message
-        self.control_panel.update_status(message)
+        is_disconnected = "Disconnected" in message or "已断开" in message or "错误" in message
+
+        self.header_bar.update_status_message(message)
+
         if is_connected:
             self.current_connection_message = message
             self.update_ui_on_connection(True)
@@ -603,30 +535,18 @@ class MainWindow(QMainWindow):
             else:
                 self.update_ui_on_connection(False)
 
-    @pyqtSlot(int)
-    def _on_num_channels_changed(self, num_channels):
-        """当设置面板中的通道数改变时调用"""
-        print(f"Menu Event: Number of channels changed to {num_channels}.")
-        # 发射主信号，通知所有订阅者
-        self.num_channels_changed.emit(num_channels)
-
     def update_ui_on_connection(self, is_connected):
         self.is_session_running = is_connected
         self.connection_panel.update_status(is_connected)
         self.tools_panel.update_status(is_connected)
         self.eye_typing_action.setEnabled(is_connected)
-        self.control_panel.start_rec_btn.setEnabled(is_connected)
-        if not is_connected:
-            self.control_panel.stop_rec_btn.setEnabled(False)
-            self.control_panel.add_marker_btn.setEnabled(False)
+        self.recording_panel.set_session_active(is_connected)
 
-    @pyqtSlot(object)  # 使用更通用的 'object' 类型来接收信号
+    @pyqtSlot(object)
     def save_recording_data(self, data_to_save):
         if data_to_save is None:
-            # 如果接收到 None，更新状态并直接返回，不弹出文件对话框
-            self.control_panel.update_status("Recording stopped (no data).")
-            # 确保录制按钮状态被正确重置
-            self.control_panel.reset_recording_buttons()
+            self.header_bar.update_status_message("Recording stopped (no data).")
+            self.recording_panel.set_recording_state(False)
             return
 
         filename, _ = QFileDialog.getSaveFileName(self, "Save EEG Data", "", "MATLAB files (*.mat)")
@@ -639,108 +559,71 @@ class MainWindow(QMainWindow):
             self.save_thread.finished.connect(self.save_thread.deleteLater)
             self.save_thread.start()
         else:
-            self.control_panel.update_status("Save cancelled.")
-            self.control_panel.reset_recording_buttons()
+            self.header_bar.update_status_message("Save cancelled.")
+            self.recording_panel.set_session_active(True)
+            self.recording_panel.set_recording_state(False)
 
     def on_save_finished(self, message):
-        print(message)
         status_to_display = message
-
         if "File saved successfully to" in message:
-            # 1. 提取文件名用于打印日志（方便调试）
-            filepath = message.replace("File saved successfully to ", "")
-            filename = os.path.basename(filepath)
+            filename = os.path.basename(message.replace("File saved successfully to ", ""))
             print(f"Save successful: {filename}")
-
-            # 2. 创建一个简短的消息用于UI显示
             status_to_display = f"Saved: {filename}"
 
-        self.control_panel.reset_recording_buttons()
-        self.control_panel.update_status(status_to_display)
+        self.recording_panel.set_session_active(True)
+        self.recording_panel.set_recording_state(False)
+        self.header_bar.update_status_message(status_to_display)
         self.save_thread.quit()
 
     def _on_start_recording_clicked(self):
-        """
-        在开始录制前，强制将UI上完整的通道名称列表同步到DataProcessor。
-        """
-        # 1. 从 ControlPanel 获取当前所有通道的名称
-        current_names = self.control_panel.get_channel_names()
-
-        # 2. 将这个完整的列表发送给 DataProcessor
-        #    这将覆盖掉 DataProcessor 中任何陈旧的状态
+        current_names = self.channel_settings_panel.get_channel_names()
         self.data_processor.set_channel_names(current_names)
-
-        # 3. 现在，命令 DataProcessor 开始录制
         self.data_processor.start_recording()
 
     def _on_acquisition_started(self):
-        """当引导式采集开始时，动态创建并显示覆盖层"""
-        print("UI notified: Acquisition has started.")
-
-        # --- 核心修复：创建时不再指定父控件 (parent=None) ---
+        print("UI notified: Acquisition started.")
         self.guidance_overlay = GuidanceOverlay(parent=None)
-
         self.guidance_overlay.exit_clicked.connect(self.acquisition_controller.stop)
-
         self.acquisition_controller.update_state.connect(self.guidance_overlay.update_display)
         self.guidance_overlay.show_overlay()
 
-        self.control_panel.start_rec_btn.setEnabled(False)
-        self.control_panel.stop_rec_btn.setEnabled(False)
-        # self.time_domain_widget.start_acq_btn.setEnabled(False)
+        self.recording_panel.start_rec_btn.setEnabled(False)
+        self.recording_panel.stop_rec_btn.setEnabled(False)
 
     def _on_acquisition_finished(self):
-        """当引导式采集结束时，销毁覆盖层并恢复UI"""
-        print("UI notified: Acquisition has finished.")
-
-        # --- 核心修复 3：安全地销毁 Overlay ---
+        print("UI notified: Acquisition finished.")
         if hasattr(self, 'guidance_overlay') and self.guidance_overlay:
-            # 断开所有连接，防止内存泄漏
             try:
                 self.acquisition_controller.update_state.disconnect(self.guidance_overlay.update_display)
             except TypeError:
-                pass  # 信号可能已经断开
-
+                pass
             self.guidance_overlay.hide_overlay()
-            self.guidance_overlay.deleteLater()  # 安全地删除对象
+            self.guidance_overlay.deleteLater()
             self.guidance_overlay = None
 
-        # --- 恢复按钮状态的逻辑保持不变 ---
-        # self.time_domain_widget.start_acq_btn.setEnabled(True)
         self.update_ui_on_connection(self.is_session_running)
 
     def closeEvent(self, event):
-        """
-        在关闭窗口时，以【阻塞】模式停止会话，确保所有后台活动
-        在窗口被销毁前完全结束。
-        """
         self.is_shutting_down = True
         print("Close event triggered.")
 
-        # Stop the model controller thread
-        self.eog_model_controller_thread.quit()
-        self.eog_model_controller_thread.wait()
+        # 清理所有持久线程
+        for thread in [self.eog_model_controller_thread, self.ica_thread]:
+            if thread and thread.isRunning():
+                thread.quit()
+                thread.wait()
 
-        # 1. 调用 stop_session 并传入 blocking=True
         self.stop_session(blocking=True)
-
-        # 2. 在确认所有线程都已结束后，再安全地接受关闭事件
-        print("All threads stopped. Accepting close event.")
+        print("All threads stopped. Closing.")
         event.accept()
 
     def show_about_dialog(self):
-        """显示程序的“关于”对话框"""
         about_dialog = QMessageBox(self)
         about_dialog.setWindowTitle("About ExGMP")
-
-        # 设置左侧的Logo图标 (QPixmap用于显示图片)
         logo_pixmap = QPixmap(resource_path("icons/logo.png"))
-        # 将其缩放到合适的大小，例如 64x64，并保持宽高比
         scaled_logo = logo_pixmap.scaled(64, 64, Qt.AspectRatioMode.KeepAspectRatio,
                                          Qt.TransformationMode.SmoothTransformation)
         about_dialog.setIconPixmap(scaled_logo)
-
-        # 设置右侧的文本内容 (支持HTML格式)
         about_dialog.setTextFormat(Qt.TextFormat.RichText)
         about_dialog.setText(
             "<h2>ExG Monitor Platform</h2>"
@@ -749,50 +632,28 @@ class MainWindow(QMainWindow):
             "<p>Developed by BioSignal Link.</p>"
             "<p>&copy; 2025.10.16</p>"
         )
-
         about_dialog.exec()
 
     def _launch_eye_typer(self):
-        """Creates, connects, and launches the eye typing dialog."""
-        # Create a new instance each time to ensure a clean state
         self.eye_typing_dialog = EyeTypingWidget(self)
-
-        current_names = self.control_panel.get_channel_names()
+        current_names = self.channel_settings_panel.get_channel_names()
         self.eog_model_controller.set_channel_names(current_names)
 
-        # Connect the model's prediction signal to the dialog's input slot
         self.eog_model_controller.prediction_ready.connect(self.eye_typing_dialog.on_prediction_received)
-
-        # Tell the model controller to start predicting
         self.eog_model_controller.set_active(True)
 
-        # Show the dialog. The 'exec()' call will block until it's closed.
         self.eye_typing_dialog.exec()
 
-        # --- Cleanup after the dialog is closed ---
-        print("Eye typing dialog closed. Cleaning up.")
-
-        # Tell the model controller to stop predicting to save resources
         self.eog_model_controller.set_active(False)
-
-        # Disconnect the signal to prevent closed widgets from receiving signals
         try:
             self.eog_model_controller.prediction_ready.disconnect(self.eye_typing_dialog.on_prediction_received)
         except TypeError:
-            pass  # Ignore error if it's already disconnected
+            pass
 
     @pyqtSlot(np.ndarray)
     def _on_calibration_data_ready(self, data):
-        """
-        当 DataProcessor 收集完校准数据后，此槽被调用。
-        它将触发后台 ICA 训练。
-        """
-        # 更新UI状态，告知用户训练已开始
         self.tools_panel.set_training_state()
         current_sample_rate = self.data_processor.sampling_rate
-
-        # 使用 QMetaObject.invokeMethod 安全地跨线程调用 train 方法
-        # 这会将数据传递给 ICAProcessor 并在其自己的线程中执行 train()
         QMetaObject.invokeMethod(self.ica_processor, "train",
                                  Qt.ConnectionType.QueuedConnection,
                                  Q_ARG(np.ndarray, data),
@@ -800,83 +661,50 @@ class MainWindow(QMainWindow):
 
     @pyqtSlot(object, np.ndarray, list)
     def _on_ica_training_finished(self, ica_model, components, suggested_indices):
-        """
-        当后台 ICA 训练完成后，此槽被调用。
-        现在它能接收自动检测到的伪迹索引，并将其传递给对话框。
-        """
-        print(
-            f"MainWindow: Received trained ICA model. MNE suggested {suggested_indices} as artifacts. Launching dialog.")
-
-        # 获取当前采样率，这部分逻辑不变
+        print("MainWindow: ICA training finished. Launching selector.")
         current_sample_rate = self.data_processor.sampling_rate
 
-        # --- 2. 在创建对话框时，将 `suggested_indices` 作为新参数传递进去 ---
-        # dialog = ICAComponentDialog(components, current_sample_rate, self) # 旧的调用方式
         dialog = ICAComponentDialog(
             components_data=components,
             sampling_rate=current_sample_rate,
             parent=self,
-            suggested_indices=suggested_indices  # <- 新增的参数
+            suggested_indices=suggested_indices
         )
 
-        # 后续的逻辑完全保持不变，因为对话框内部已经处理了自动勾选
-        result = dialog.exec()
-
-        if result == QDialog.DialogCode.Accepted:
+        if dialog.exec() == QDialog.DialogCode.Accepted:
             bad_indices = dialog.get_selected_indices()
-            print(f"User confirmed/selected components {bad_indices} as artifacts.")
-
             self.data_processor.set_ica_parameters(ica_model, bad_indices)
             self.tools_panel.set_calibration_finished()
         else:
-            print("User cancelled ICA component selection.")
             self.tools_panel.update_status(self.is_session_running)
 
     @pyqtSlot(str)
     def _on_ica_training_failed(self, error_message):
-        """当 ICA 训练失败时，此槽被调用。"""
         QMessageBox.critical(self, "ICA Training Error", error_message)
-        # 重置UI状态
         self.tools_panel.update_status(self.is_session_running)
 
     @pyqtSlot(str)
     def on_wifi_connected_send_commands(self, message):
-        if "Connected" in message or "已连接" in message:
-            # 1. 一旦连接成功，就断开这个槽的连接，防止重连时重复发送
-            try:
-                self.receiver_instance.connection_status.disconnect(self.on_wifi_connected_send_commands)
-            except TypeError:
-                pass  # 可能已经断开，忽略
+        # 此时连接必定已成功（信号已在 start_session 中过滤）
+        print("Wi-Fi connected. Sending configuration commands...")
 
-            print("Wi-Fi connected. Sending configuration commands...")
+        rate_map = {250: 0x87, 500: 0x86, 1000: 0x85, 2000: 0x84, 4000: 0x83}
+        current_rate = self.settings_panel.get_current_sample_rate()
+        current_channels = self.settings_panel.get_current_channels()
 
-            # 2. 从SettingsPanel获取当前配置
-            rate_map = {500: 0x86, 1000: 0x85, 2000: 0x84, 4000: 0x83}
+        sample_rate_code = rate_map.get(current_rate, 0x85)
+        channel_mask = (1 << current_channels) - 1
 
-            current_rate = self.settings_panel.rate_button_group.checkedId()
-            current_channels = self.settings_panel.channels_button_group.checkedId()
+        self.receiver_instance.update_active_channels(current_channels)
 
-            sample_rate_code = rate_map.get(current_rate, 0x85)  # 默认1000SPS
+        import struct
+        cmd_part = struct.pack('>BBBB', 0x5A, 0x01, sample_rate_code, channel_mask)
+        checksum = sum(cmd_part) & 0xFF
+        config_command = cmd_part + struct.pack('>B', checksum)
 
-            # 计算通道掩码
-            channel_mask = (1 << current_channels) - 1
+        cmd_part = struct.pack('>BB', 0x5A, 0x02)
+        checksum = sum(cmd_part) & 0xFF
+        start_command = cmd_part + struct.pack('>B', checksum)
 
-            self.receiver_instance.update_active_channels(current_channels)
-
-            # 3. 打包“设置配置”命令
-            import struct
-            # | Header | CmdID | Rate Code | Ch Mask | Checksum |
-            cmd_part = struct.pack('>BBBB', 0x5A, 0x01, sample_rate_code, channel_mask)
-            checksum = sum(cmd_part) & 0xFF
-            config_command = cmd_part + struct.pack('>B', checksum)
-
-            # 4. 打包“开始采集”命令
-            cmd_part = struct.pack('>BB', 0x5A, 0x02)
-            checksum = sum(cmd_part) & 0xFF
-            start_command = cmd_part + struct.pack('>B', checksum)
-
-            # 5. 发送命令 (需要为 DataReceiver 添加 send_command 方法)
-            self.receiver_instance.send_command(config_command)
-            # 短暂延时，给下位机处理时间
-            QTimer.singleShot(100, lambda: self.receiver_instance.send_command(start_command))
-
+        self.receiver_instance.send_command(config_command)
+        QTimer.singleShot(100, lambda: self.receiver_instance.send_command(start_command))

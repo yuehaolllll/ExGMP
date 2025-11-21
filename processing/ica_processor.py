@@ -1,15 +1,12 @@
-# In processing/ica_processor.py
+# File: processing/ica_processor.py
 
 import numpy as np
 from PyQt6.QtCore import QObject, pyqtSignal, pyqtSlot
 
-# 确保你已经安装了 MNE: pip install mne
 try:
     from mne.preprocessing import ICA
     from mne import create_info
     from mne.io import RawArray
-    from mne.preprocessing.eog import create_eog_epochs
-    #from mne.preprocessing.eog import find_bads_eog
 except ImportError:
     print("Error: MNE-Python is not installed. Please install it using 'pip install mne'")
     ICA, create_info, RawArray = None, None, None
@@ -18,78 +15,88 @@ except ImportError:
 class ICAProcessor(QObject):
     """
     使用 MNE-Python 的 ICA 在后台线程中训练模型。
-    这是一个更健壮、更专业的实现。
+    【修复版】：增加了降采样和自适应成分数量，解决 4000Hz 下的协方差矩阵病态问题。
     """
     training_finished = pyqtSignal(object, np.ndarray, list)
     training_failed = pyqtSignal(str)
 
-    # --- 核心修改 1: train 方法现在需要 sampling_rate ---
     @pyqtSlot(np.ndarray, int)
     def train(self, calibration_data, sampling_rate):
         """
         接收校准数据和采样率，并训练 MNE ICA 模型。
-        此版本硬编码地将前两个通道 (CH1, CH2) 设置为 EOG 通道。
         """
         if ICA is None:
             self.training_failed.emit("MNE-Python is not installed.")
             return
 
         n_channels, n_samples = calibration_data.shape
-        print(f"ICAProcessor: Starting training. Hard-coding CH1 and CH2 as EOG channels.")
+        print(f"ICAProcessor: Received {n_samples} samples @ {sampling_rate}Hz.")
 
-        # --- 检查通道数是否足够 ---
         if n_channels < 3:
             self.training_failed.emit(
-                f"Error: At least 3 channels are required for ICA with 2 EOG channels, but got {n_channels}.")
+                f"Error: At least 3 channels required (2 EOG + EEG). Got {n_channels}.")
             return
 
         try:
-            # --- 2. 动态生成通道名称和类型，固定前两个为EOG ---
+            # --- 1. 定义通道配置 ---
             ch_names = [f'CH {i + 1}' for i in range(n_channels)]
-            ch_types = ['eeg'] * n_channels  # 先全部设为 'eeg'
+            ch_types = ['eeg'] * n_channels
 
-            # 将前两个通道的类型和名称设置为EOG
-            ch_types[0] = 'eog'
-            ch_types[1] = 'eog'
-            ch_names[0] = 'EOG_V'  # V for Vertical
-            ch_names[1] = 'EOG_H'  # H for Horizontal
+            # 硬编码前两个为 EOG
+            ch_types[0] = 'eog';
+            ch_names[0] = 'EOG_V'
+            ch_types[1] = 'eog';
+            ch_names[1] = 'EOG_H'
 
-            print(f"Info: Channel types set to: {ch_types}")
-
+            # --- 2. 创建 Raw 对象 ---
             info = create_info(ch_names=ch_names, sfreq=sampling_rate, ch_types=ch_types)
-            raw = RawArray(calibration_data, info)
+            # 转换为 Volts
+            raw = RawArray(calibration_data * 1e-6, info)
 
-            print("Info: High-pass filtering data at 1.0 Hz for better ICA performance...")
-            raw.filter(l_freq=1.0, h_freq=None)
+            # --- [关键修复 1] 降采样 ---
+            # ICA 不需要 4000Hz 的精度，200Hz 足够捕捉眨眼和伪迹
+            # 这能极大提高计算速度，并规避高频噪音导致的矩阵不稳定
+            TARGET_ICA_FREQ = 200
+            if sampling_rate > TARGET_ICA_FREQ:
+                print(f"Info: Resampling data from {sampling_rate}Hz to {TARGET_ICA_FREQ}Hz for ICA stability...")
+                raw.resample(TARGET_ICA_FREQ, npad="auto")
 
-            # --- 3. ICA拟合 ---
-            # 计算EEG通道的数量，这对于设置 n_components 至关重要
-            n_eeg_channels = ch_types.count('eeg')
-            ica = ICA(n_components=n_eeg_channels,  # 成分数应等于EEG通道数
-                      method='picard',
-                      max_iter='auto',
-                      random_state=97)
-            # MNE的fit会自动选择`picks='eeg'`来训练，排除EOG通道
-            ica.fit(raw)
+            # --- 3. 预处理滤波 ---
+            # 1Hz 高通是 ICA 的标配，去漂移
+            raw.filter(l_freq=1.0, h_freq=None, verbose=False)
 
-            # --- 4. 自动检测EOG伪迹 ---
-            # MNE的 find_bads_eog 非常智能，它会自动找到所有类型为 'eog' 的通道
-            # 并用它们来共同寻找相关的ICA成分。
-            # 现在，我们调用 ica 对象自带的 find_bads_eog 方法
-            print("Info: Automatically detecting EOG artifacts using all defined EOG channels...")
-            suggested_bad_indices, scores = ica.find_bads_eog(raw)
+            # --- [关键修复 2] 自适应成分数量 ---
+            # 不要硬编码 n_components = n_eeg_channels。
+            # 使用 float (0.99) 让算法保留解释 99% 方差的主成分。
+            # 如果矩阵病态，它会自动减少成分数量（例如从 6 降到 5），从而避免崩溃。
 
-            print(f"Info: MNE suggested components {suggested_bad_indices} as EOG artifacts.")
+            print("Info: Fitting ICA using extended-infomax (or fastica)...")
+            ica = ICA(
+                n_components=0.99,  # <--- 这里的改动解决了 RuntimeWarning
+                method='fastica',  # fastica 通常比 picard 更稳健
+                max_iter=500,  # 增加最大迭代次数
+                random_state=97
+            )
 
-            # --- 5. 准备数据并发送信号 (逻辑不变) ---
-            sources_raw = ica.get_sources(raw)
-            # 确保只提取与EEG通道数相匹配的成分进行可视化
-            components_for_viz = sources_raw.get_data()
+            # 训练 (仅使用 EEG 通道，剔除 EOG)
+            ica.fit(raw, verbose=True)
 
-            print("ICAProcessor (MNE): Training finished successfully.")
-            self.training_finished.emit(ica, components_for_viz, suggested_bad_indices)
+            # --- 4. 自动检测 EOG 伪迹 ---
+            print("Info: Detecting EOG artifacts...")
+            # threshold 3.0 是经验值，如果觉得太敏感可以调高到 4.0
+            suggested_bad_indices, scores = ica.find_bads_eog(raw, threshold=3.0, verbose=False)
+
+            # 确保索引是简单的 int 列表
+            suggested_bad_indices = [int(x) for x in suggested_bad_indices]
+            print(f"Info: MNE suggested artifacts indices: {suggested_bad_indices}")
+
+            # --- 5. 获取源数据用于绘图 ---
+            sources = ica.get_sources(raw).get_data()
+
+            print(f"ICAProcessor: Training finished. Decomposed into {sources.shape[0]} components.")
+            self.training_finished.emit(ica, sources, suggested_bad_indices)
 
         except Exception as e:
-            error_message = f"An error occurred during MNE ICA training: {e}"
-            print(error_message)
-            self.training_failed.emit(error_message)
+            import traceback
+            traceback.print_exc()
+            self.training_failed.emit(f"ICA Training Error: {str(e)}")

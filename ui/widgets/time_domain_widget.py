@@ -1,66 +1,70 @@
 # In ui/widgets/time_domain_widget.py
 import pyqtgraph as pg
 import numpy as np
-import collections
-from pyqtgraph.Qt import QtWidgets
-from PyQt6.QtCore import QTimer, pyqtSlot, pyqtSignal
-from PyQt6.QtWidgets import QWidget, QVBoxLayout, QPushButton, QStackedLayout, QHBoxLayout, QGridLayout
+from PyQt6.QtCore import QTimer, pyqtSlot
+from PyQt6.QtWidgets import QWidget, QVBoxLayout, QPushButton, QHBoxLayout, QStackedWidget
 from enum import Enum
 from functools import partial
 
-# 绘图模式
+
+# 绘图模式枚举
 class PlotMode(Enum):
     INDIVIDUAL = 1
     STACKED = 2
 
+
 PLOT_COLORS = [
-    "#007BFF",  # Blue
-    "#28A745",  # Green
-    "#DC3545",  # Red
-    "#17A2B8",  # Teal
-    "#FD7E14",  # Orange
-    "#6F42C1",  # Purple
-    "#343A40",  # Dark Gray
-    "#E83E8C",  # Pink
-    "#6610f2",
-    "#20c997"
+    "#007BFF", "#28A745", "#DC3545", "#17A2B8", "#FD7E14",
+    "#6F42C1", "#343A40", "#E83E8C", "#6610f2", "#20c997"
 ]
 
 CHANNEL_HEIGHT = 1.0
 
+
 class TimeDomainWidget(QWidget):
-    def __init__(self, data_processor, parent=None):
+    def __init__(self, data_processor=None, parent=None):
         super().__init__(parent)
         self.data_processor = data_processor
 
-        # --- 1. 初始化所有实例变量 (状态管理) ---
+        # --- 1. 初始化状态变量 ---
+        if self.data_processor:
+            self.num_channels = self.data_processor.num_channels
+            self.sample_rate = self.data_processor.sampling_rate
+        else:
+            self.num_channels = 8
+            self.sample_rate = 1000
+
         self.is_review_mode = False
         self.static_data = None
         self.static_time_vector = None
         self.current_mode = PlotMode.STACKED
         self.plot_seconds = 5
-        self.sampling_rate = 1000
-        self.num_channels = 8  # 默认值
+
+        # 缓存时间轴，避免每帧重复计算
+        self._time_vector = None
+
         self._is_updating_stacked_range = False
         self.marker_lines, self.temp_marker_lines = [], []
         self.stacked_view_scale = 200.0
         self._initial_autorange_done = False
+        self._is_reconfiguring = False
 
-        # 将所有动态列表初始化为空
+        # 动态列表初始化
         self.individual_scales = []
-        self.data_buffers = []
         self.stacked_curves, self.stacked_labels = [], []
         self.individual_plots, self.individual_curves = [], []
 
+        # --- 2. 定时器 ---
         self.plot_update_timer = QTimer(self)
         self.plot_update_timer.setInterval(33)  # ~30 FPS
         self.plot_update_timer.timeout.connect(self.update_display)
 
-        # --- 2. 构建基础UI框架 ---
+        # --- 3. 构建基础UI ---
         main_layout = QVBoxLayout(self)
         main_layout.setContentsMargins(0, 0, 0, 0)
         main_layout.setSpacing(5)
 
+        # 顶部按钮栏
         button_bar_layout = QHBoxLayout()
         self.switch_button = QPushButton("Switch to Individual View")
         self.switch_button.setFixedWidth(180)
@@ -69,112 +73,95 @@ class TimeDomainWidget(QWidget):
         button_bar_layout.addWidget(self.switch_button)
         main_layout.addLayout(button_bar_layout)
 
-        self.plot_stack = pg.QtWidgets.QStackedWidget()
+        # 绘图区域堆栈
+        self.plot_stack = QStackedWidget()
         main_layout.addWidget(self.plot_stack)
 
-        # --- 3. 在 __init__ 的最后，调用一次 reconfigure_channels 来完成所有UI的创建 ---
+        # --- 4. 初始化配置 ---
+        self._recalc_time_vector()  # 预计算时间轴
         self.reconfigure_channels(self.num_channels)
 
+    # --- 生命周期控制 ---
     def start_updates(self):
-        """由 MainWindow 调用，在连接成功后启动定时刷新。"""
         if not self.plot_update_timer.isActive():
             self.plot_update_timer.start()
 
     def stop_updates(self):
-        """由 MainWindow 调用，在断开连接后停止定时刷新。"""
         if self.plot_update_timer.isActive():
             self.plot_update_timer.stop()
 
+    # --- 核心配置逻辑 ---
     @pyqtSlot(int)
     def reconfigure_channels(self, num_channels):
-        """
-        核心方法：清空并根据新的通道数重建所有绘图组件和数据缓冲区。
-        """
-        # 如果通道数未改变且UI已构建，则不操作
-        if self.num_channels == num_channels and hasattr(self, 'stacked_curves') and self.stacked_curves:
+        """根据新的通道数重建UI，清理旧资源"""
+        # 如果通道数未变且UI已存在，跳过
+        if self.num_channels == num_channels and self.plot_stack.count() > 0:
             return
 
         self._is_reconfiguring = True
-
         print(f"TimeDomainWidget: Reconfiguring UI for {num_channels} channels.")
+
         self.num_channels = num_channels
-
-        # 1. 重置与通道数相关的状态和数据缓冲区
-        self.plot_window_samples = int(self.sampling_rate * self.plot_seconds)
         self.individual_scales = [200.0] * num_channels
-        # self.data_buffers = [
-        #     collections.deque(np.zeros(self.plot_window_samples), maxlen=self.plot_window_samples)
-        #     for _ in range(num_channels)
-        # ]
 
-        # 2. 清理旧的绘图组件
-        # 安全地从 QStackedWidget 中移除并删除旧的 GraphicsLayoutWidgets
+        # 1. 清理旧组件 (防止内存泄漏)
         while self.plot_stack.count() > 0:
-            widget_to_remove = self.plot_stack.widget(0)
-            self.plot_stack.removeWidget(widget_to_remove)
-            widget_to_remove.deleteLater()  # 非常重要，确保 C++ 对象被正确销毁
+            w = self.plot_stack.widget(0)
+            self.plot_stack.removeWidget(w)
+            w.deleteLater()
 
-        # 3. 重新创建两个视图的 GraphicsLayoutWidget 实例
+        # 2. 重建视图
         self.stacked_view = self._create_stacked_view()
         self.individual_view = self._create_individual_view()
 
-        # 4. 将新创建的视图添加到 QStackedWidget 中
         self.plot_stack.addWidget(self.stacked_view)
         self.plot_stack.addWidget(self.individual_view)
 
-        # 5. 最后，更新布局和视图模式
+        # 3. 恢复状态
         self._update_individual_view_layout()
-        self._set_plot_mode(self.current_mode)  # 恢复当前视图模式
+        self._set_plot_mode(self.current_mode)
 
         self._is_reconfiguring = False
-        self._redraw_all_channels()
-
-    @pyqtSlot(int)
-    def set_sample_rate(self, new_rate):
-        if self.sampling_rate == new_rate: return
-        self.sampling_rate = new_rate
-        # 当采样率变化时，重新计算绘图窗口的点数
-        self.set_plot_duration(self.plot_seconds)
 
     def _create_stacked_view(self):
         view = pg.GraphicsLayoutWidget()
         self.stacked_plot = view.addPlot(row=0, col=0)
-
-        #self.stacked_plot.setDownsampling(mode='peak')
-        self.stacked_plot.setDownsampling(False)
+        self.stacked_plot.setDownsampling(auto=True, mode='peak')  # 开启自动降采样提升性能
         self.stacked_plot.setClipToView(True)
-
         self.stacked_plot.setLabel('bottom', 'Time', units='s')
         self.stacked_plot.hideAxis('left')
         self.stacked_plot.showGrid(x=True, y=True, alpha=0.4)
+
         self.stacked_plot.getViewBox().setMouseEnabled(y=True)
         self.stacked_plot.getViewBox().sigYRangeChanged.connect(self._on_stacked_y_range_changed)
+
         self.stacked_curves, self.stacked_labels = [], []
+
         for i in range(self.num_channels):
             offset = (self.num_channels - 1 - i) * CHANNEL_HEIGHT
-            # 从 PLOT_COLORS 中循环取色，防止通道数超过颜色数时崩溃
             color = PLOT_COLORS[i % len(PLOT_COLORS)]
+
+            # 曲线
             curve = self.stacked_plot.plot(pen=pg.mkPen(color=color, width=1.5))
-            label = pg.TextItem(f"CH {i + 1}", color=color, anchor=(0, 0.5))
-            label.setPos(-0.05 * self.plot_seconds, offset)
-            self.stacked_plot.addItem(label)
             self.stacked_curves.append(curve)
+
+            # 标签
+            label = pg.TextItem(f"CH {i + 1}", color=color, anchor=(0, 0.5))
+            label.setPos(0, offset)  # 暂时设为0，update时会调整
+            self.stacked_plot.addItem(label)
             self.stacked_labels.append(label)
+
         self._update_stacked_y_range()
         return view
 
     def _create_individual_view(self):
         view = pg.GraphicsLayoutWidget()
         view.ci.layout.setSpacing(2)
+        self.individual_plots, self.individual_curves = [], []
 
-        self.individual_plots = []
-        self.individual_curves = []
-
-        # Create all 8 PlotItems once and store them
         for i in range(self.num_channels):
             p = pg.PlotItem()
-            #p.setDownsampling(mode='peak')
-            p.setDownsampling(False)
+            p.setDownsampling(auto=True, mode='peak')
             p.setClipToView(True)
             p.showGrid(x=True, y=True, alpha=0.3)
             p.setYRange(-self.individual_scales[i], self.individual_scales[i])
@@ -186,87 +173,145 @@ class TimeDomainWidget(QWidget):
 
             self.individual_plots.append(p)
             self.individual_curves.append(curve)
-
         return view
 
-    def toggle_visibility(self, channel, visible):
-        # Stacked View logic (correct)
-        if 0 <= channel < len(self.stacked_curves):
-            self.stacked_curves[channel].setVisible(visible)
-            self.stacked_labels[channel].setVisible(visible)
+    # --- 核心：数据更新与绘图 (高性能优化版) ---
+    def _recalc_time_vector(self):
+        """当采样率或时长改变时，预计算时间轴，避免每帧计算"""
+        if self.data_processor:
+            # 计算实际显示的点数（考虑降采样）
+            effective_rate = self.sample_rate / self.data_processor.downsample_factor
+        else:
+            effective_rate = self.sample_rate
 
-        # Individual View: Hide/Show the PlotItem and trigger a full layout rebuild
-        if 0 <= channel < len(self.individual_plots):
-            self.individual_plots[channel].setVisible(visible)
-            self._update_individual_view_layout()
+        num_points = int(effective_rate * self.plot_seconds)
+        self._time_vector = np.linspace(0, self.plot_seconds, num_points)
+
+    def update_display(self):
+        """定时器回调：拉取最新数据并刷新"""
+        if self.is_review_mode or self._is_reconfiguring:
+            return
+        if not self.data_processor:
+            return
+
+        # 1. 拉取数据 (从 Processor 获取已降采样的视图)
+        full_data = self.data_processor.get_plot_data()
+        if full_data is None or full_data.size == 0:
+            return
+
+        # 2. 准备时间轴
+        # 如果时间轴尚未初始化或长度不匹配（比如刚刚重置了Processor），重新计算
+        target_len = len(self._time_vector)
+        current_len = full_data.shape[1]
+
+        # 截取或补全数据以匹配时间轴
+        if current_len >= target_len:
+            # 取最后 target_len 个点
+            display_data = full_data[:, -target_len:]
+            t = self._time_vector
+        else:
+            # 数据不足时（刚启动），临时计算一个短的时间轴
+            # 这种情况只在启动前几秒发生，性能损耗可忽略
+            effective_rate = self.sample_rate / self.data_processor.downsample_factor
+            t = np.linspace(0, current_len / effective_rate, current_len)
+            display_data = full_data
+
+        # 3. 绘图更新 (仅更新当前模式下的可见曲线)
+        if self.current_mode == PlotMode.STACKED:
+            scale = self.stacked_view_scale if abs(self.stacked_view_scale) > 1e-9 else 1e-9
+
+            for i in range(min(self.num_channels, display_data.shape[0])):
+                # 性能优化：只更新可见曲线
+                if self.stacked_curves[i].isVisible():
+                    offset = (self.num_channels - 1 - i) * CHANNEL_HEIGHT
+                    # 矢量化计算
+                    y_data = (display_data[i] / scale * CHANNEL_HEIGHT / 2) + offset
+                    self.stacked_curves[i].setData(t, y_data)
+
+        else:  # INDIVIDUAL Mode
+            for i in range(min(self.num_channels, display_data.shape[0])):
+                if self.individual_plots[i].isVisible():
+                    self.individual_curves[i].setData(t, display_data[i])
+
+        # 4. 处理首次自动缩放关闭
+        if not self._initial_autorange_done and np.any(display_data):
+            self._disable_autorange()
+
+    def _disable_autorange(self):
+        self.stacked_plot.enableAutoRange(axis='y', enable=False)
+        for p in self.individual_plots:
+            p.enableAutoRange(axis='y', enable=False)
+        self._initial_autorange_done = True
+        print("TimeDomainWidget: Auto-range disabled.")
+
+    # --- 交互与事件处理 ---
+    @pyqtSlot(int)
+    def set_sample_rate(self, new_rate):
+        if self.sample_rate == new_rate: return
+        self.sample_rate = new_rate
+        self.set_plot_duration(self.plot_seconds)  # 触发重新计算时间轴
+
+    @pyqtSlot(int)
+    def set_plot_duration(self, seconds):
+        if self.is_review_mode: return
+        self.plot_seconds = seconds
+
+        # 更新X轴
+        self.stacked_plot.setXRange(0, self.plot_seconds)
+        for p in self.individual_plots:
+            p.setXRange(0, self.plot_seconds)
+
+        # 重新计算时间缓存
+        self._recalc_time_vector()
+
+        # 更新标签位置
+        for i, label in enumerate(self.stacked_labels):
+            offset = (self.num_channels - 1 - i) * CHANNEL_HEIGHT
+            label.setPos(-0.05 * self.plot_seconds, offset)
+
+    def toggle_visibility(self, channel, visible):
+        """切换通道可见性"""
+        if 0 <= channel < self.num_channels:
+            # Stacked
+            if channel < len(self.stacked_curves):
+                self.stacked_curves[channel].setVisible(visible)
+                self.stacked_labels[channel].setVisible(visible)
+            # Individual
+            if channel < len(self.individual_plots):
+                self.individual_plots[channel].setVisible(visible)
+                # 重新排列独立视图布局
+                self._update_individual_view_layout()
 
     def _update_individual_view_layout(self):
-        """Dynamically rebuilds the layout for a clean, correct, and independent view."""
+        """重建独立视图布局，只显示可见的 plot"""
         layout = self.individual_view.ci
         layout.clear()
 
-        visible_plots = [p for p in self.individual_plots if p.isVisible()]
+        # 筛选可见图表
+        visible_items = [(i, p) for i, p in enumerate(self.individual_plots) if p.isVisible()]
 
-        for i, plot in enumerate(visible_plots):
-            channel_index = self.individual_plots.index(plot)
+        for row, (idx, plot) in enumerate(visible_items):
+            plot.setXLink(None);
+            plot.setYLink(None)  # 解除联动
 
-            # 1. 强制解除任何现有的轴联动，确保每个图表的X轴和Y轴都是独立的
-            plot.setXLink(None)
-            plot.setYLink(None)
-
-            # 2. 重新应用Y轴标签，防止它在布局重建时丢失
-            plot.setLabel('left', f"CH {channel_index + 1}", units='µV', color=PLOT_COLORS[channel_index])
-
-            # 3. 无条件地为每一个可见的图表显示其独立的X轴
+            # 恢复标签
+            color = PLOT_COLORS[idx % len(PLOT_COLORS)]
+            plot.setLabel('left', f"CH {idx + 1}", units='µV', color=color)
             plot.showAxis('bottom')
             plot.setLabel('bottom', 'Time', units='s')
 
-            # --- 原来的条件隐藏逻辑已被上面两行代码替代 ---
-            # if i < len(visible_plots) - 1:
-            #     plot.hideAxis('bottom')
-            # else:
-            #     plot.showAxis('bottom')
-            #     plot.setLabel('bottom', 'Time', units='s')
-
-            # 4. 将配置好的图表添加到布局的下一行
-            layout.addItem(plot, row=i, col=0)
-
-    def _update_stacked_y_range(self):
-        if self._is_updating_stacked_range or not hasattr(self, 'stacked_plot'): return
-        self._is_updating_stacked_range = True
-        total_height = self.num_channels * CHANNEL_HEIGHT * (200.0 / self.stacked_view_scale)
-        self.stacked_plot.setYRange(-total_height / self.num_channels, total_height)
-        self._is_updating_stacked_range = False
-
-    def _on_stacked_y_range_changed(self):
-        if self._is_updating_stacked_range or self._is_reconfiguring: return
-        self._is_updating_stacked_range = True
-        y_range = self.stacked_plot.getViewBox().viewRange()[1]
-        visible_height = y_range[1] - y_range[0]
-        if abs(visible_height) > 1e-9:
-            self.stacked_view_scale = (self.num_channels * CHANNEL_HEIGHT * 200.0) / visible_height
-        if not self.is_review_mode: self._redraw_stacked()
-        self._is_updating_stacked_range = False
-
-    def _on_individual_y_range_changed(self, channel_index):
-        plot_item = self.individual_plots[channel_index]
-        # Check if the axis is part of a scene; a robust way to check if it's "alive"
-        if plot_item.getAxis('left').scene() is not None:
-            y_range = plot_item.getViewBox().viewRange()[1]
-            new_scale = (y_range[1] - y_range[0]) / 2
-            self.individual_scales[channel_index] = new_scale
+            layout.addItem(plot, row=row, col=0)
 
     def _toggle_plot_mode(self):
-        if self.current_mode == PlotMode.STACKED:
-            self._set_plot_mode(PlotMode.INDIVIDUAL)
-        else:
-            self._set_plot_mode(PlotMode.STACKED)
+        new_mode = PlotMode.INDIVIDUAL if self.current_mode == PlotMode.STACKED else PlotMode.STACKED
+        self._set_plot_mode(new_mode)
 
     def _set_plot_mode(self, mode):
-        # 状态同步逻辑
+        # 状态同步：切换回 Stacked 时应用第一通道的缩放
         if mode == PlotMode.STACKED and self.current_mode == PlotMode.INDIVIDUAL:
-            self.stacked_view_scale = self.individual_scales[0]
-            self._update_stacked_y_range()
+            if self.individual_scales:
+                self.stacked_view_scale = self.individual_scales[0]
+                self._update_stacked_y_range()
 
         self.current_mode = mode
         if mode == PlotMode.STACKED:
@@ -276,244 +321,194 @@ class TimeDomainWidget(QWidget):
             self.plot_stack.setCurrentWidget(self.individual_view)
             self.switch_button.setText("Switch to Stacked View")
 
-        # 切换后，立即使用【正确的数据源】重绘
-        self._redraw_all_channels()
-
-    def _redraw_all_channels(self):
-        if self._is_reconfiguring: return
-        if self.current_mode == PlotMode.STACKED: self._redraw_stacked()
-        else: self._redraw_individual()
-
-    def _redraw_stacked(self):
-        if self._is_reconfiguring: return
+        # 切换模式后立即重绘（如果在回放模式）
         if self.is_review_mode:
-            if self.static_data is None: return
-            data_source, time_vector = self.static_data, self.static_time_vector
-        else:
-            if not self.data_buffers or not self.data_buffers[0]: return
-            data_source = [np.array(buf) for buf in self.data_buffers]
-            time_vector = np.linspace(0, self.plot_seconds, len(self.data_buffers[0]))
+            self._redraw_static()
 
-        scale = self.stacked_view_scale
-        if abs(scale) < 1e-9: scale = 1e-9
+    # --- 缩放与范围处理 ---
+    def _update_stacked_y_range(self):
+        if self._is_updating_stacked_range or not hasattr(self, 'stacked_plot'): return
+        self._is_updating_stacked_range = True
+        # 计算总高度范围
+        total_height = self.num_channels * CHANNEL_HEIGHT * (200.0 / self.stacked_view_scale)
+        # 设置范围，留出一点余量
+        self.stacked_plot.setYRange(-total_height / self.num_channels, total_height)
+        self._is_updating_stacked_range = False
 
-        for i in range(self.num_channels):
-            offset = (self.num_channels - 1 - i) * CHANNEL_HEIGHT
-            scaled_data = (data_source[i] / scale * CHANNEL_HEIGHT / 2) + offset
-            self.stacked_curves[i].setData(x=time_vector, y=scaled_data)
+    def _on_stacked_y_range_changed(self):
+        """用户缩放 Stacked 视图时反算 scale"""
+        if self._is_updating_stacked_range or self._is_reconfiguring: return
+        self._is_updating_stacked_range = True
 
-    def _redraw_individual(self):
-        if self._is_reconfiguring: return
-        if self.is_review_mode:
-            if self.static_data is None: return
-            data_source, time_vector = self.static_data, self.static_time_vector
-        else:
-            if not self.data_buffers or not self.data_buffers[0]: return
-            data_source = [np.array(buf) for buf in self.data_buffers]
-            time_vector = np.linspace(0, self.plot_seconds, len(self.data_buffers[0]))
+        y_range = self.stacked_plot.getViewBox().viewRange()[1]
+        visible_height = y_range[1] - y_range[0]
 
-        for i in range(self.num_channels):
-            self.individual_curves[i].setData(x=time_vector, y=data_source[i])
+        if abs(visible_height) > 1e-9:
+            self.stacked_view_scale = (self.num_channels * CHANNEL_HEIGHT * 200.0) / visible_height
 
-    def update_display(self):
-        """按固定频率主动拉取数据并更新绘图。"""
-        if self.is_review_mode or self.data_processor is None:
-            return
+        if self.is_review_mode: self._redraw_static()
+        self._is_updating_stacked_range = False
 
-        # 1. 从 DataProcessor 拉取最新的、已展开的滚动数据
-        full_plot_data = self.data_processor.get_plot_data()
+    def _on_individual_y_range_changed(self, channel_index):
+        """用户缩放 Individual 视图时记录 scale"""
+        if channel_index >= len(self.individual_plots): return
+        plot = self.individual_plots[channel_index]
 
-        # 2. 计算当前需要显示的数据窗口
-        # 注意：这里的采样率是降采样后的速率
-        downsampled_rate = self.sampling_rate / self.data_processor.downsample_factor
-        num_display_samples = int(downsampled_rate * self.plot_seconds)
+        if plot.getAxis('left').scene():  # 确保对象存活
+            y_range = plot.getViewBox().viewRange()[1]
+            self.individual_scales[channel_index] = (y_range[1] - y_range[0]) / 2
 
-        # 3. 从数据末尾截取需要显示的部分
-        # .copy() 是可选的，但可以防止一些潜在的跨线程问题
-        display_data = full_plot_data[:, -num_display_samples:].copy()
+    @pyqtSlot(int, float)
+    def adjust_scale(self, channel, new_scale):
+        """外部调用（如滚轮或设置）调整缩放"""
+        if not (0 <= channel < self.num_channels): return
 
-        # 4. 创建对应的时间轴
-        time_vector = np.linspace(0, self.plot_seconds, display_data.shape[1])
+        self.individual_scales[channel] = new_scale
+        if self.current_mode == PlotMode.INDIVIDUAL:
+            self.individual_plots[channel].setYRange(-new_scale, new_scale)
+        elif self.current_mode == PlotMode.STACKED:
+            self.stacked_view_scale = new_scale
+            self._update_stacked_y_range()
+            if self.is_review_mode: self._redraw_static()
 
-        # 5. 更新曲线数据 (这里不再需要调用 _redraw_all_channels)
-        scale = self.stacked_view_scale
-        if abs(scale) < 1e-9: scale = 1e-9
+    # --- 回放/静态模式逻辑 ---
+    def display_static_data(self, data, sampling_rate, markers=None, channel_names=None):
+        """进入回放模式显示静态数据"""
+        self.is_review_mode = True
+        self.stop_updates()  # 停止实时刷新
 
-        for i in range(self.num_channels):
-            if i < len(self.stacked_curves):
-                # 更新 Stacked View
-                offset = (self.num_channels - 1 - i) * CHANNEL_HEIGHT
-                scaled_data = (display_data[i] / scale * CHANNEL_HEIGHT / 2) + offset
-                self.stacked_curves[i].setData(x=time_vector, y=scaled_data)
+        num_channels, num_samples = data.shape
+        self.reconfigure_channels(num_channels)
+        self.clear_plots(for_static=True)  # 清理 Marker
 
-            if i < len(self.individual_curves):
-                # 更新 Individual View
-                self.individual_curves[i].setData(x=time_vector, y=display_data[i])
+        # 保存静态数据
+        self.static_data = data
+        duration = num_samples / sampling_rate
+        self.static_time_vector = np.arange(num_samples) / sampling_rate
 
-        # 6. 处理首次自动缩放 (逻辑不变，但放在这里)
-        if not self._initial_autorange_done and np.any(display_data):
-            self.stacked_plot.enableAutoRange(axis='y', enable=False)
-            for p in self.individual_plots:
-                p.enableAutoRange(axis='y', enable=False)
-            self._initial_autorange_done = True
-            print("TimeDomainWidget: Initial auto-ranging complete. Y-axis range is now fixed.")
-    # def update_plot(self, data_chunk):
-    #     if self.is_review_mode: return
-    #     # 防御性检查，确保传入的数据维度和当前UI配置的通道数匹配
-    #     if data_chunk.shape[0] != self.num_channels:
-    #         print(
-    #             f"Warning (TimeDomain): Received data with {data_chunk.shape[0]} channels, but UI is configured for {self.num_channels}. Ignoring chunk.")
-    #         return
-    #     for i in range(self.num_channels):
-    #         self.data_buffers[i].extend(data_chunk[i])
-    #
-    #     if not self._initial_autorange_done:
-    #         # 在刚开始时，保持自动缩放开启
-    #         # 我们可以在这里加一个计数器，例如在第10帧数据到达后关闭它
-    #         # 一个更简单的方法是，只要数据不是全0，就认为可以关闭了
-    #         if np.any(data_chunk):  # 检查数据块中是否有非零值
-    #             # 禁用所有绘图区域的Y轴自动缩放
-    #             self.stacked_plot.enableAutoRange(axis='y', enable=False)
-    #             for p in self.individual_plots:
-    #                 p.enableAutoRange(axis='y', enable=False)
-    #
-    #             self._initial_autorange_done = True
-    #             print("TimeDomainWidget: Initial auto-ranging complete. Y-axis range is now fixed.")
-    #
-    #     self._redraw_all_channels()
+        # 自动设置初始缩放
+        max_val = np.max(np.abs(data)) if np.any(data) else 200.0
+        if max_val < 1e-9: max_val = 200.0
 
-    @pyqtSlot(int, str)
-    def update_channel_name(self, channel, new_name):
-        """
-        更新两种视图模式下对应通道的名称。
-        """
-        # 安全检查，确保 channel 索引有效
-        if 0 <= channel < self.num_channels:
+        self.stacked_view_scale = max_val
+        self.individual_scales = [max_val] * num_channels
 
-            # --- 核心修复：操作正确的、用户可见的UI组件 ---
+        # 设置视图范围
+        self.stacked_plot.setXRange(0, duration)
+        self._update_stacked_y_range()
 
-            # 1. 更新“独立视图”(Individual View)中对应图表的Y轴标签
-            #    self.individual_plots 是在 _create_individual_view 中创建的图表列表
-            if hasattr(self, 'individual_plots') and channel < len(self.individual_plots):
-                axis = self.individual_plots[channel].getAxis('left')
-                axis.setLabel(new_name, units='µV')
-
-            # 2. 更新“堆叠视图”(Stacked View)中对应通道的文本标签
-            #    self.stacked_labels 是在 _create_stacked_view 中创建的 TextItem 列表
-            if hasattr(self, 'stacked_labels') and channel < len(self.stacked_labels):
-                self.stacked_labels[channel].setText(new_name)
-
-            print(f"TimeDomainWidget: Updated channel {channel} name to '{new_name}' in both views.")
-
-    @pyqtSlot(int)
-    def set_plot_duration(self, seconds):
-        if self.is_review_mode: return
-
-        self.plot_seconds = seconds
-        self.plot_window_samples = int(self.sampling_rate * self.plot_seconds)
-
-        # 更新X轴范围
-        for p in self.individual_plots: p.setXRange(0, self.plot_seconds)
-        self.stacked_plot.setXRange(0, self.plot_seconds)
+        for p in self.individual_plots:
+            p.setXRange(0, duration)
+            p.setYRange(-max_val, max_val)
 
         # 更新标签位置
         for i, label in enumerate(self.stacked_labels):
             offset = (self.num_channels - 1 - i) * CHANNEL_HEIGHT
-            label.setPos(-0.05 * self.plot_seconds, offset)
-
-    @pyqtSlot(int, float)
-    def adjust_scale(self, channel, new_scale):
-        if 0 <= channel < self.num_channels:
-            self.individual_scales[channel] = new_scale
-            if self.current_mode == PlotMode.INDIVIDUAL:
-                self.individual_plots[channel].setYRange(-new_scale, new_scale)
-            elif self.current_mode == PlotMode.STACKED:
-                self.stacked_view_scale = new_scale
-                self._update_stacked_y_range()
-                self._redraw_stacked()
-
-    @pyqtSlot()
-    def show_live_marker(self):
-        marker_time = self.plot_seconds
-        pen = pg.mkPen('g', style=pg.QtCore.Qt.PenStyle.DashLine, width=2)
-
-        if self.current_mode == PlotMode.STACKED:
-            line = pg.InfiniteLine(pos=marker_time, angle=90, pen=pen)
-            self.stacked_plot.addItem(line)
-            self.temp_marker_lines.append(line)
-        else:
-            for p in self.individual_plots:
-                if p.isVisible():
-                    line = pg.InfiniteLine(pos=marker_time, angle=90, pen=pen)
-                    p.addItem(line)
-                    self.temp_marker_lines.append(line)
-
-        QTimer.singleShot(1500, self.remove_live_markers)
-
-    def remove_live_markers(self):
-        for line in self.temp_marker_lines:
-            if line.scene(): line.scene().removeItem(line)
-        self.temp_marker_lines.clear()
-
-    def display_static_data(self, data, sampling_rate, markers=None, channel_names=None):
-        self.is_review_mode = True
-        self.clear_plots(for_static=True)
-        num_channels, num_samples = data.shape
-        self.reconfigure_channels(num_channels)
-        duration = num_samples / sampling_rate
-        self.static_data = data
-        self.static_time_vector = np.arange(num_samples) / sampling_rate
-        max_abs_val = np.max(np.abs(data))
-        if max_abs_val < 1e-9: max_abs_val = 200.0
-        self.stacked_view_scale = max_abs_val
-        self._update_stacked_y_range()
-        for i in range(self.num_channels):
-            self.individual_scales[i] = max_abs_val
-            self.individual_plots[i].setYRange(-max_abs_val, max_abs_val)
-        self.stacked_plot.setXRange(0, duration, padding=0)
-        for p in self.individual_plots: p.setXRange(0, duration, padding=0)
-        for i, label in enumerate(self.stacked_labels):
-            offset = (self.num_channels - 1 - i) * CHANNEL_HEIGHT
             label.setPos(-0.05 * duration, offset)
-        self._redraw_all_channels()
+
+        # 绘制数据
+        self._redraw_static()
+
+        # 更新名称
         if channel_names:
             for i, name in enumerate(channel_names):
                 self.update_channel_name(i, name)
-        if markers is not None and 'timestamps' in markers and len(markers['timestamps']) > 0:
-            timestamps, labels = markers['timestamps'], markers['labels']
-            pen = pg.mkPen('r', style=pg.QtCore.Qt.PenStyle.DashLine, width=1)
-            for ts, lbl in zip(timestamps, labels):
-                marker_time = float(ts) / sampling_rate
-                line1 = pg.InfiniteLine(pos=marker_time, angle=90, movable=False, pen=pen, label=str(lbl), labelOpts={'position':0.1, 'color':'r', 'movable':True})
-                self.stacked_plot.addItem(line1); self.marker_lines.append(line1)
-                for p in self.individual_plots:
-                    line2 = pg.InfiniteLine(pos=marker_time, angle=90, movable=False, pen=pen, label=str(lbl), labelOpts={'position':0.1, 'color':'r', 'movable':True})
-                    p.addItem(line2); self.marker_lines.append(line2)
+
+        # 绘制 Marker
+        if markers and 'timestamps' in markers:
+            self._draw_static_markers(markers, sampling_rate)
+
+    def _redraw_static(self):
+        """重绘静态数据（用于回放模式下的缩放/切换）"""
+        if self.static_data is None: return
+
+        t = self.static_time_vector
+        data = self.static_data
+
+        if self.current_mode == PlotMode.STACKED:
+            scale = self.stacked_view_scale if abs(self.stacked_view_scale) > 1e-9 else 1e-9
+            for i in range(self.num_channels):
+                offset = (self.num_channels - 1 - i) * CHANNEL_HEIGHT
+                y = (data[i] / scale * CHANNEL_HEIGHT / 2) + offset
+                self.stacked_curves[i].setData(t, y)
+        else:
+            for i in range(self.num_channels):
+                self.individual_curves[i].setData(t, data[i])
+
+    def _draw_static_markers(self, markers, fs):
+        timestamps, labels = markers['timestamps'], markers['labels']
+        pen = pg.mkPen('r', style=pg.QtCore.Qt.PenStyle.DashLine, width=1)
+
+        for ts, lbl in zip(timestamps, labels):
+            t_sec = float(ts) / fs
+            # Stacked Marker
+            l1 = pg.InfiniteLine(pos=t_sec, angle=90, pen=pen, label=str(lbl),
+                                 labelOpts={'position': 0.1, 'color': 'r', 'movable': True})
+            self.stacked_plot.addItem(l1)
+            self.marker_lines.append(l1)
+
+            # Individual Markers
+            for p in self.individual_plots:
+                l2 = pg.InfiniteLine(pos=t_sec, angle=90, pen=pen, label=str(lbl),
+                                     labelOpts={'position': 0.1, 'color': 'r', 'movable': True})
+                p.addItem(l2)
+                self.marker_lines.append(l2)
+
+    # --- 工具方法 ---
+    @pyqtSlot(int, str)
+    def update_channel_name(self, channel, new_name):
+        if not (0 <= channel < self.num_channels): return
+
+        # Stacked
+        if channel < len(self.stacked_labels):
+            self.stacked_labels[channel].setText(new_name)
+        # Individual
+        if channel < len(self.individual_plots):
+            self.individual_plots[channel].getAxis('left').setLabel(new_name, units='µV')
+
+    @pyqtSlot()
+    def show_live_marker(self):
+        """显示实时 Marker 动画"""
+        pos = self.plot_seconds
+        pen = pg.mkPen('g', style=pg.QtCore.Qt.PenStyle.DashLine, width=2)
+
+        lines = []
+        if self.current_mode == PlotMode.STACKED:
+            line = pg.InfiniteLine(pos=pos, angle=90, pen=pen)
+            self.stacked_plot.addItem(line)
+            lines.append(line)
+        else:
+            for p in self.individual_plots:
+                if p.isVisible():
+                    line = pg.InfiniteLine(pos=pos, angle=90, pen=pen)
+                    p.addItem(line)
+                    lines.append(line)
+
+        self.temp_marker_lines.extend(lines)
+        # 1.5秒后自动消失
+        QTimer.singleShot(1500, partial(self._remove_temp_lines, lines))
+
+    def _remove_temp_lines(self, lines):
+        for line in lines:
+            if line.scene(): line.scene().removeItem(line)
+            if line in self.temp_marker_lines: self.temp_marker_lines.remove(line)
 
     def clear_plots(self, for_static=False):
+        """清理绘图内容"""
+        # 清理 Markers
         for line in self.marker_lines:
-            if line.scene():
-                if self.stacked_plot and line in self.stacked_plot.items: self.stacked_plot.removeItem(line)
-                for p in self.individual_plots:
-                    if line in p.items: p.removeItem(line)
+            if line.scene(): line.scene().removeItem(line)
         self.marker_lines.clear()
+
         if not for_static:
             self.is_review_mode = False
             self.static_data = None
-            self.static_time_vector = None
-            self.set_plot_duration(5)
-            # for i in range(self.num_channels):
-            #     self.data_buffers[i].clear()
-            #     self.data_buffers[i].extend(np.zeros(self.plot_window_samples))
-
             self._initial_autorange_done = False
-            self.stacked_plot.enableAutoRange(axis='y', enable=True)
-            for p in self.individual_plots:
-                p.enableAutoRange(axis='y', enable=True)
 
-            #self._redraw_all_channels()
-            downsample_factor = self.data_processor.downsample_factor if self.data_processor else 10
-            empty_data = np.zeros(int(self.sampling_rate / downsample_factor * self.plot_seconds))
-            time_vector = np.linspace(0, self.plot_seconds, len(empty_data))
-            for curve in self.stacked_curves: curve.setData(x=time_vector, y=empty_data)
-            for curve in self.individual_curves: curve.setData(x=time_vector, y=empty_data)
+            # 清空曲线
+            empty = np.array([])
+            for c in self.stacked_curves: c.setData(empty, empty)
+            for c in self.individual_curves: c.setData(empty, empty)
+
+            self.stacked_plot.enableAutoRange(axis='y', enable=True)
+            for p in self.individual_plots: p.enableAutoRange(axis='y', enable=True)

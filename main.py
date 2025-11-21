@@ -1,21 +1,34 @@
-# In main.py
 import sys
+import os
 from PyQt6.QtWidgets import QApplication
 from ui.main_window import MainWindow
 
-import sys
-import os
-import resources_rc
+# 尝试导入编译后的资源文件 (resources_rc.py)
+# 如果你使用了 .qrc 文件并通过 pyrcc6 编译，这将允许 QSS 中的 url(:/icons/...) 生效
+try:
+    import resources_rc
+except ImportError:
+    pass
 
+# --- 环境兼容性修复 ---
+# 解决 Windows 下 Conda 环境可能出现的 DLL 加载错误，以及 PyInstaller 打包后的路径问题
 try:
     if 'CONDA_PREFIX' in os.environ:
         conda_prefix = os.environ['CONDA_PREFIX']
-        os.add_dll_directory(os.path.join(conda_prefix, 'Library', 'bin'))
+        # 添加 Library/bin 到 DLL 搜索路径 (针对 Windows)
+        if os.name == 'nt':
+            os.add_dll_directory(os.path.join(conda_prefix, 'Library', 'bin'))
+
+    # 处理 PyInstaller 的临时目录
     if hasattr(sys, '_MEIPASS'):
-        os.add_dll_directory(sys._MEIPASS)
+        if os.name == 'nt':
+            os.add_dll_directory(sys._MEIPASS)
+
+    # 解决某些库 (如 numpy/torch) 的 OpenMP 冲突报错
     os.environ['KMP_DUPLICATE_LIB_OK'] = 'TRUE'
 except Exception:
     pass
+
 
 def resource_path(relative_path):
     """ Get absolute path to resource, works for dev and for PyInstaller """
@@ -27,6 +40,8 @@ def resource_path(relative_path):
 
     return os.path.join(base_path, relative_path)
 
+
+# --- 全局样式表 (QSS) ---
 QSS_STYLE = """
 /* Global settings - Clean and Professional Light Theme */
 QWidget {
@@ -126,8 +141,8 @@ QMenu::item {
 }
 
 QMenu::item:disabled {
-    color: #BDBDBD; /* Set the text color to light gray */
-    background: transparent; /* Ensure no background color */
+    color: #BDBDBD;
+    background: transparent;
 }
 
 QMenu::item:selected {
@@ -160,6 +175,8 @@ QSpinBox::up-button:hover, QDoubleSpinBox::up-button:hover,
 QSpinBox::down-button:hover, QDoubleSpinBox::down-button:hover {
     background-color: #E0E0E0; border-radius: 3px;
 }
+
+/* 注意：如果你没有编译 resources.qrc，下面这两行可能会在控制台报警告，但不影响运行 */
 QSpinBox::up-arrow, QDoubleSpinBox::up-arrow {
     image: url(:/icons/plus.svg); width: 14px; height: 14px;
 }
@@ -170,12 +187,15 @@ QSpinBox::down-arrow, QDoubleSpinBox::down-arrow {
 
 if __name__ == '__main__':
     app = QApplication(sys.argv)
+
+    # 应用全局样式表
     app.setStyleSheet(QSS_STYLE)
 
     # 1. 创建主窗口实例
     window = MainWindow()
 
-    # 2. 调用新的方法来显示窗口并开始启动流程
+    # 2. 调用我们在第一部分添加的方法：显示窗口并开始 Splash 动画
+    # 这会让窗口居中并自适应屏幕大小
     window.show_and_start_splash()
 
     # 3. 启动应用主循环

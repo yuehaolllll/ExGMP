@@ -1,3 +1,5 @@
+# File: ui/widgets/settings_panel.py
+
 from PyQt6.QtWidgets import QWidget, QVBoxLayout, QGroupBox, QRadioButton, QButtonGroup
 from PyQt6.QtCore import pyqtSignal
 
@@ -19,7 +21,7 @@ class SettingsPanel(QWidget):
         main_layout.setContentsMargins(10, 5, 10, 10)  # 调整边距以适应菜单
         main_layout.setSpacing(10)
 
-        # --- 采样率组 ---
+        # --- 1. 采样率组 ---
         rate_group = QGroupBox("Sample Rate")
         rate_layout = QVBoxLayout()
         self.rate_button_group = QButtonGroup(self)
@@ -35,9 +37,9 @@ class SettingsPanel(QWidget):
                 radio_button.setChecked(True)
 
         rate_group.setLayout(rate_layout)
-        # 当按钮组中的按钮被点击时，发射信号
         self.rate_button_group.idClicked.connect(self.sample_rate_changed)
 
+        # --- 2. 通道数组 ---
         channels_group = QGroupBox("Number of Channels")
         channels_layout = QVBoxLayout()
         self.channels_button_group = QButtonGroup(self)
@@ -52,24 +54,21 @@ class SettingsPanel(QWidget):
                 radio_button.setChecked(True)
 
         channels_group.setLayout(channels_layout)
-        # 当按钮被点击时，发射新信号
         self.channels_button_group.idClicked.connect(self.num_channels_changed)
 
+        # --- 3. 增益组 (Gain) ---
         gain_group = QGroupBox("Gain")
         gain_layout = QVBoxLayout()
         self.gain_button_group = QButtonGroup(self)
         self.gain_button_group.setExclusive(True)
 
-        # 定义增益选项 (值可以是浮点数)
-        # ADS1298/99 支持 1, 2, 4, 6, 8, 12, 24
+        # 定义增益选项
         gain_options = [12.0, 24.0]
-        default_gain = 12.0  # 假设默认增益为12
+        default_gain = 12.0
 
         for gain in gain_options:
-            # 使用 int(gain) 来避免在文本中显示 ".0"
             radio_button = QRadioButton(f"x{int(gain)}")
-            # 【关键】: QButtonGroup 不直接支持浮点数ID, 我们通过一个技巧来处理
-            # 我们可以将浮点数乘以10或100转为整数ID
+            # 【技巧】: QButtonGroup 只支持 int ID，将浮点数 * 10 存入
             gain_id = int(gain * 10)
             self.gain_button_group.addButton(radio_button, gain_id)
             gain_layout.addWidget(radio_button)
@@ -77,10 +76,9 @@ class SettingsPanel(QWidget):
                 radio_button.setChecked(True)
 
         gain_group.setLayout(gain_layout)
-        # 当按钮ID被点击时，连接到一个新的处理函数
         self.gain_button_group.idClicked.connect(self._on_gain_id_clicked)
 
-        # --- 每包帧数组 ---
+        # --- 4. 每包帧数组 ---
         frames_group = QGroupBox("Frames Per Packet")
         frames_layout = QVBoxLayout()
         self.frames_button_group = QButtonGroup(self)
@@ -97,24 +95,39 @@ class SettingsPanel(QWidget):
         frames_group.setLayout(frames_layout)
         self.frames_button_group.idClicked.connect(self.frames_per_packet_changed)
 
-        # 将所有组添加到主布局
+        # --- 组装布局 ---
         main_layout.addWidget(channels_group)
         main_layout.addWidget(rate_group)
         main_layout.addWidget(gain_group)
         main_layout.addWidget(frames_group)
 
-    def get_current_channels(self) -> int:
-        """返回当前选中的通道数。"""
-        # checkedId() 返回与选中按钮关联的整数ID，这正是我们需要的通道数
-        return self.channels_button_group.checkedId()
+        # 添加弹簧，确保控件靠上对齐，美观
+        main_layout.addStretch()
+
+    # --- 辅助方法 ---
 
     def _on_gain_id_clicked(self, gain_id: int):
+        """内部槽：将整数ID转回浮点增益并发送"""
         gain_float = float(gain_id) / 10.0
         self.gain_changed.emit(gain_float)
 
+    # --- Public Getters (封装完善) ---
+
+    def get_current_channels(self) -> int:
+        """返回当前选中的通道数"""
+        return self.channels_button_group.checkedId()
+
+    def get_current_sample_rate(self) -> int:
+        """返回当前选中的采样率"""
+        return self.rate_button_group.checkedId()
+
+    def get_current_frames(self) -> int:
+        """返回当前每包帧数"""
+        return self.frames_button_group.checkedId()
+
     def get_current_gain(self) -> float:
-        """返回当前选中的增益值 (浮点数)"""
+        """返回当前选中的增益值 (float)"""
         gain_id = self.gain_button_group.checkedId()
-        if gain_id != -1:  # -1 表示没有按钮被选中
+        if gain_id != -1:
             return float(gain_id) / 10.0
-        return 12.0  # 返回一个默认值以防万一
+        return 12.0  # 默认回退值
