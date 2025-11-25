@@ -1,7 +1,7 @@
 # File: ui/widgets/connection_panel.py
 
 from PyQt6.QtWidgets import QWidget, QVBoxLayout, QGroupBox, QRadioButton, QPushButton, QHBoxLayout, QButtonGroup
-from PyQt6.QtCore import pyqtSignal
+from PyQt6.QtCore import pyqtSignal, Qt
 from .serial_settings_panel import SerialSettingsPanel
 
 
@@ -17,12 +17,14 @@ class ConnectionPanel(QWidget):
         super().__init__(parent)
 
         main_layout = QVBoxLayout(self)
-        main_layout.setContentsMargins(10, 5, 10, 10)
-        main_layout.setSpacing(10)
+        main_layout.setContentsMargins(15, 10, 15, 15)
+        main_layout.setSpacing(15)
 
         # --- 连接类型组 ---
-        type_group = QGroupBox("Connection Type")
+        type_group = QGroupBox("Select Connection")
         type_layout = QVBoxLayout()
+        type_layout.setSpacing(8)  # 单选按钮之间的间距
+        type_layout.setContentsMargins(5, 15, 5, 5)  # 给上方标题留点空隙
         self.conn_type_group = QButtonGroup(self)
 
         self.wifi_radio = QRadioButton("WiFi")
@@ -46,10 +48,16 @@ class ConnectionPanel(QWidget):
 
         # --- 操作按钮 ---
         button_layout = QHBoxLayout()
+        button_layout.setSpacing(10)  # 按钮之间的间距
         self.connect_btn = QPushButton("Connect")
-        # 默认样式强调连接
-        self.connect_btn.setStyleSheet("font-weight: bold; background-color: #E0E0E0;")
+        self.connect_btn.setObjectName("btnConnect")  # 关键：设置ID以应用蓝色样式
+        self.connect_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.connect_btn.setFixedHeight(36)  # 稍微增高，方便点击
+
         self.disconnect_btn = QPushButton("Disconnect")
+        self.disconnect_btn.setObjectName("btnDisconnect")  # 关键：设置ID以应用灰色样式
+        self.disconnect_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.disconnect_btn.setFixedHeight(36)
 
         button_layout.addWidget(self.connect_btn)
         button_layout.addWidget(self.disconnect_btn)

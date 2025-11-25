@@ -1,15 +1,11 @@
 # File: ui/widgets/display_filter_panel.py
 
 from PyQt6.QtWidgets import (QWidget, QGridLayout, QLabel, QSpinBox,
-                             QDoubleSpinBox, QCheckBox, QComboBox, QPushButton)
-from PyQt6.QtCore import pyqtSignal
+                             QDoubleSpinBox, QCheckBox, QComboBox, QPushButton, QVBoxLayout, QHBoxLayout)
+from PyQt6.QtCore import pyqtSignal, Qt
 
 
 class DisplayFilterPanel(QWidget):
-    """
-    一个独立的面板，用于控制绘图时长和数字滤波器设置。
-    """
-    # 1. 定义本面板需要向外发射的信号
     plot_duration_changed = pyqtSignal(int)
     filter_settings_changed = pyqtSignal(float, float)
     notch_filter_changed = pyqtSignal(bool, float)
@@ -17,51 +13,80 @@ class DisplayFilterPanel(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
 
-        # 2. 将原来 ControlPanel 中创建 Display & Filter GroupBox 的代码 "搬" 过来
-        settings_layout = QGridLayout(self)
-        settings_layout.setContentsMargins(10, 10, 10, 10)
-        settings_layout.setSpacing(8)
+        main_layout = QVBoxLayout(self)
+        main_layout.setContentsMargins(15, 15, 15, 15)
+        main_layout.setSpacing(12)
 
-        # 绘图时长设置
-        settings_layout.addWidget(QLabel("Plot Duration (s):"), 0, 0)
+        # --- 辅助函数：统一 Label 样式 ---
+        def create_row(label_text, widget):
+            row_layout = QHBoxLayout()
+            lbl = QLabel(label_text)
+            lbl.setFixedWidth(90)  # 固定宽度确保对齐
+            lbl.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+            row_layout.addWidget(lbl)
+            row_layout.addWidget(widget)
+            return row_layout
+
+        # 1. Plot Duration
         self.duration_spinbox = QSpinBox()
         self.duration_spinbox.setRange(2, 30)
         self.duration_spinbox.setValue(5)
         self.duration_spinbox.setSuffix(" s")
-        settings_layout.addWidget(self.duration_spinbox, 0, 1)
+        self.duration_spinbox.setMinimumHeight(32)
+        main_layout.addLayout(create_row("Duration:", self.duration_spinbox))
 
-        # 高通滤波设置
-        settings_layout.addWidget(QLabel("High-pass (Hz):"), 1, 0)
+        # 2. High-pass
         self.hp_spinbox = QDoubleSpinBox()
         self.hp_spinbox.setRange(0.0, 200.0)
         self.hp_spinbox.setValue(0.0)
         self.hp_spinbox.setSuffix(" Hz")
-        self.hp_spinbox.setDecimals(1)
         self.hp_spinbox.setSingleStep(0.5)
-        settings_layout.addWidget(self.hp_spinbox, 1, 1)
+        self.hp_spinbox.setMinimumHeight(32)
+        main_layout.addLayout(create_row("High-pass:", self.hp_spinbox))
 
-        # 低通滤波设置
-        settings_layout.addWidget(QLabel("Low-pass (Hz):"), 2, 0)
+        # 3. Low-pass
         self.lp_spinbox = QDoubleSpinBox()
         self.lp_spinbox.setRange(0.0, 500.0)
         self.lp_spinbox.setValue(100.0)
         self.lp_spinbox.setSuffix(" Hz")
-        self.lp_spinbox.setDecimals(1)
         self.lp_spinbox.setSingleStep(5.0)
-        settings_layout.addWidget(self.lp_spinbox, 2, 1)
+        self.lp_spinbox.setMinimumHeight(32)
+        main_layout.addLayout(create_row("Low-pass:", self.lp_spinbox))
 
-        # 陷波滤波
+        # 4. Notch Filter (改进版)
+        # 不再使用 Label，直接用 Checkbox 作为开关文本，右侧放频率
+        notch_layout = QHBoxLayout()
+
         self.notch_checkbox = QCheckBox("Enable Notch Filter")
-        settings_layout.addWidget(self.notch_checkbox, 3, 0)
+        self.notch_checkbox.setCursor(Qt.CursorShape.PointingHandCursor)
+        # 让 Checkbox 占据左侧空间
+
         self.notch_freq_combo = QComboBox()
         self.notch_freq_combo.addItems(["50 Hz", "60 Hz"])
-        settings_layout.addWidget(self.notch_freq_combo, 3, 1)
+        self.notch_freq_combo.setFixedWidth(110)
+        self.notch_freq_combo.setMinimumHeight(32)
 
-        # 应用按钮
+        # 初始禁用 Combo，直到勾选
+        self.notch_freq_combo.setEnabled(False)
+        self.notch_checkbox.toggled.connect(self.notch_freq_combo.setEnabled)
+
+        notch_layout.addWidget(self.notch_checkbox)
+        notch_layout.addStretch()  # 中间弹簧
+        notch_layout.addWidget(self.notch_freq_combo)
+
+        main_layout.addLayout(notch_layout)
+
+        main_layout.addSpacing(10)
+
+        # 5. Apply 按钮
         self.apply_settings_btn = QPushButton("Apply Settings")
-        settings_layout.addWidget(self.apply_settings_btn, 4, 0, 1, 2)
+        self.apply_settings_btn.setObjectName("btnConnect")  # 蓝色实心样式
+        self.apply_settings_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.apply_settings_btn.setFixedHeight(38)
 
-        # 3. 连接 "Apply" 按钮的点击事件
+        main_layout.addWidget(self.apply_settings_btn)
+        main_layout.addStretch()
+
         self.apply_settings_btn.clicked.connect(self._on_apply_settings)
 
     def _on_apply_settings(self):
@@ -70,10 +95,9 @@ class DisplayFilterPanel(QWidget):
         low_pass = self.lp_spinbox.value()
 
         if high_pass >= low_pass and high_pass > 0:
-            print("Warning: High-pass frequency must be lower than low-pass frequency.")
+            print("Warning: HP must be < LP")
             return
 
-        # 发射信号
         self.plot_duration_changed.emit(duration)
         self.filter_settings_changed.emit(high_pass, low_pass)
 
@@ -81,6 +105,3 @@ class DisplayFilterPanel(QWidget):
         freq_text = self.notch_freq_combo.currentText()
         notch_freq = float(freq_text.split()[0])
         self.notch_filter_changed.emit(notch_enabled, notch_freq)
-
-        print(
-            f"Settings Applied: Duration={duration}s, HP={high_pass}Hz, LP={low_pass}Hz, Notch={'On' if notch_enabled else 'Off'} @ {notch_freq}Hz")

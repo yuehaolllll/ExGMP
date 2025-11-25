@@ -40,7 +40,7 @@ class SettingsPanel(QWidget):
         self.rate_button_group.idClicked.connect(self.sample_rate_changed)
 
         # --- 2. 通道数组 ---
-        channels_group = QGroupBox("Number of Channels")
+        channels_group = QGroupBox("Num of Channels")
         channels_layout = QVBoxLayout()
         self.channels_button_group = QButtonGroup(self)
         self.channels_button_group.setExclusive(True)

@@ -689,6 +689,7 @@ class MainWindow(QMainWindow):
         print("Wi-Fi connected. Sending configuration commands...")
 
         rate_map = {250: 0x87, 500: 0x86, 1000: 0x85, 2000: 0x84, 4000: 0x83}
+        # rate_map = {250: 0x96, 500: 0x95, 1000: 0x94, 2000: 0x93, 4000: 0x92}
         current_rate = self.settings_panel.get_current_sample_rate()
         current_channels = self.settings_panel.get_current_channels()
 

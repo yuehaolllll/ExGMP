@@ -1,9 +1,9 @@
 # File: ui/widgets/serial_settings_panel.py
 
 from PyQt6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QComboBox,
-                             QPushButton, QLabel, QFormLayout)
+                             QPushButton, QLabel, QFormLayout, QStyle)
 import serial.tools.list_ports
-
+from PyQt6.QtCore import Qt
 
 class SerialSettingsPanel(QWidget):
     """
@@ -12,27 +12,35 @@ class SerialSettingsPanel(QWidget):
 
     def __init__(self, parent=None):
         super().__init__(parent)
-
+        self.setStyleSheet("background-color: #F0F4F8; border-radius: 6px;")
         layout = QFormLayout(self)
-        layout.setContentsMargins(5, 10, 5, 5)
-        layout.setSpacing(10)
+        layout.setContentsMargins(10, 10, 10, 10)
+        layout.setSpacing(12)
+        layout.setLabelAlignment(Qt.AlignmentFlag.AlignLeft)  # 标签左对齐
 
-        # --- COM 端口选择 ---
+        # --- COM 端口 ---
         self.com_port_combo = QComboBox()
-        # 让下拉框稍微宽一点，防止长描述被截断
-        self.com_port_combo.setMinimumWidth(150)
+        self.com_port_combo.setMinimumHeight(30)  # 增加高度
 
-        com_port_layout = QHBoxLayout()
-        com_port_layout.addWidget(self.com_port_combo, stretch=1)
+        com_layout = QHBoxLayout()
+        com_layout.setSpacing(8)
+        com_layout.addWidget(self.com_port_combo, stretch=1)
 
-        refresh_button = QPushButton("⟳")  # 使用符号更简洁
-        refresh_button.setFixedWidth(30)
-        refresh_button.setToolTip("Refresh Ports")
-        refresh_button.clicked.connect(self.refresh_com_ports)
-        com_port_layout.addWidget(refresh_button)
+        self.refresh_btn = QPushButton()
+        # 使用 Qt 内置的标准“刷新/重载”图标
+        self.refresh_btn.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_BrowserReload))
+
+        self.refresh_btn.setObjectName("btnNormal")
+        self.refresh_btn.setFixedSize(32, 32)  # 稍微大一点，正方形
+        self.refresh_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.refresh_btn.setToolTip("Refresh Serial Ports")
+        self.refresh_btn.clicked.connect(self.refresh_com_ports)
+
+        com_layout.addWidget(self.refresh_btn)
 
         # --- 波特率选择 ---
         self.baud_rate_combo = QComboBox()
+        self.baud_rate_combo.setMinimumHeight(32)
         # 补充了 1M 和 2M 的波特率，现代 MCU (如 ESP32) 常用于高速传输
         common_baud_rates = ["9600", "19200", "38400", "57600", "115200",
                              "230400", "460800", "921600", "1000000", "2000000"]
@@ -41,7 +49,7 @@ class SerialSettingsPanel(QWidget):
         self.baud_rate_combo.setCurrentText("921600")
 
         # 将控件添加到表单布局
-        layout.addRow(QLabel("Port:"), com_port_layout)
+        layout.addRow(QLabel("Port:"), com_layout)
         layout.addRow(QLabel("Baud:"), self.baud_rate_combo)
 
         # 初始时刷新一次COM口列表

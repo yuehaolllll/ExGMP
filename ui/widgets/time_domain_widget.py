@@ -1,7 +1,7 @@
 # In ui/widgets/time_domain_widget.py
 import pyqtgraph as pg
 import numpy as np
-from PyQt6.QtCore import QTimer, pyqtSlot
+from PyQt6.QtCore import QTimer, pyqtSlot, Qt
 from PyQt6.QtWidgets import QWidget, QVBoxLayout, QPushButton, QHBoxLayout, QStackedWidget
 from enum import Enum
 from functools import partial
@@ -67,7 +67,9 @@ class TimeDomainWidget(QWidget):
         # 顶部按钮栏
         button_bar_layout = QHBoxLayout()
         self.switch_button = QPushButton("Switch to Individual View")
-        self.switch_button.setFixedWidth(180)
+        self.switch_button.setObjectName("btnViewSwitch")
+        self.switch_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.switch_button.setFixedWidth(200)  # 稍微加宽一点，适应胶囊形状
         self.switch_button.clicked.connect(self._toggle_plot_mode)
         button_bar_layout.addStretch()
         button_bar_layout.addWidget(self.switch_button)

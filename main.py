@@ -43,149 +43,230 @@ def resource_path(relative_path):
 
 # --- 全局样式表 (QSS) ---
 QSS_STYLE = """
-/* Global settings - Clean and Professional Light Theme */
+/* --- Google Material Design Theme (PNG Compatible Edition) --- */
+
+/* 1. 全局基础 */
 QWidget {
-    background-color: #F0F2F5;
-    color: #212121;
-    font-family: "Segoe UI", "Roboto", "Helvetica Neue", sans-serif;
+    background-color: #FFFFFF;
+    color: #202124;
+    font-family: "Segoe UI", "Roboto", "Microsoft YaHei", sans-serif;
     font-size: 10pt;
 }
 
-/* GroupBox styling */
+/* 2. 分组框 */
 QGroupBox {
-    background-color: #FFFFFF;
-    border: 1px solid #DCDCDC;
-    border-radius: 6px;
-    margin-top: 1ex;
-    font-weight: bold;
+    background-color: transparent;
+    border: 1px solid #DADCE0;
+    border-radius: 8px;
+    margin-top: 24px;
+    font-weight: 500;
 }
 QGroupBox::title {
     subcontrol-origin: margin;
-    subcontrol-position: top center;
-    padding: 2px 8px;
-    color: #005A9E;
-}
-
-/* Default Button styling */
-QPushButton {
-    background-color: #E0E0E0;
-    border: 1px solid #BDBDBD;
-    padding: 6px 12px;
-    border-radius: 4px;
-    color: #212121;
-}
-QPushButton:hover {
-    background-color: #E8E8E8;
-    border: 1px solid #007BFF;
-}
-QPushButton:pressed {
-    background-color: #D0D0D0;
-}
-QPushButton:disabled {
-    background-color: #F5F5F5;
-    color: #BDBDBD;
-}
-
-/* Input fields styling */
-QLineEdit, QSpinBox, QDoubleSpinBox {
+    subcontrol-position: top left;
+    padding: 0 5px;
+    left: 10px;
+    color: #1A73E8;
     background-color: #FFFFFF;
-    border: 1px solid #BDBDBD;
-    border-radius: 4px;
-    padding: 5px;
-}
-QLineEdit:focus, QSpinBox:focus, QDoubleSpinBox:focus {
-    border: 1px solid #007BFF;
 }
 
-/* CheckBox styling */
+/* 3. 单选框 (Radio) */
+QRadioButton {
+    spacing: 8px; padding: 6px 10px; border-radius: 4px; color: #3C4043; font-weight: 400;
+}
+QRadioButton:hover { background-color: #F1F3F4; }
+QRadioButton:checked { background-color: #E8F0FE; color: #1967D2; font-weight: 600; }
+
+QRadioButton::indicator {
+    width: 16px; height: 16px;
+    border-radius: 9px;
+    background-color: #FFFFFF;
+    image: none;
+}
+QRadioButton::indicator:unchecked { border: 2px solid #5F6368; }
+QRadioButton::indicator:unchecked:hover { border-color: #1A73E8; background-color: #F8F9FA; }
+QRadioButton::indicator:checked {
+    border: 5px solid #1A73E8;
+    background-color: #FFFFFF;
+}
+
+/* 4. 复选框 (CheckBox) - 修复对号显示 */
+QCheckBox {
+    spacing: 10px; color: #3C4043; font-weight: 400;
+}
+QCheckBox:hover { background-color: transparent; }
+
 QCheckBox::indicator {
-    width: 16px;
-    height: 16px;
-    border: 1px solid #BDBDBD;
+    width: 18px; height: 18px;
     border-radius: 3px;
+    border: 2px solid #5F6368;
     background-color: #FFFFFF;
 }
+QCheckBox::indicator:hover { border-color: #1A73E8; background-color: #F8F9FA; }
+
 QCheckBox::indicator:checked {
-    background-color: #007BFF;
+    background-color: #1A73E8;
+    border: 2px solid #1A73E8;
+    /* PNG 格式的白色对号，保证显示 */
+    image: url(data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAwAAAAMCAYAAABWdVznAAAACXBIWXMAAA7EAAAOxAGVKw4bAAAAUElEQVQokWNgIBEwMjAw/AdxSRiI8AmD5DDAXFw6//9H1gUTx6UDRANMHAuA62VkwC5xH6c4yDhuA3ApRrYAm2I8DoO04XYg3mDE6S2cHgMNAQCUyR117g55OAAAAABJRU5ErkJggg==);
 }
 
-/* Menu Bar styling */
-QMenuBar {
-    background-color: #F0F2F5;
-    border-bottom: 1px solid #DCDCDC;
-    padding: 2px;
+/* 5. 按钮 */
+QPushButton {
+    border-radius: 4px; padding: 8px 24px; font-weight: 600; font-size: 10pt; border: 1px solid transparent;
 }
-QMenuBar::item {
-    spacing: 4px;
-    padding: 4px 10px;
-    background: transparent;
+QPushButton#btnConnect, QPushButton#btnStart, QPushButton#btnAdd {
+    background-color: #1A73E8; color: white; border: none;
+}
+QPushButton#btnConnect:hover, QPushButton#btnStart:hover, QPushButton#btnAdd:hover {
+    background-color: #185ABC;
+}
+QPushButton#btnConnect:pressed, QPushButton#btnStart:pressed, QPushButton#btnAdd:pressed {
+    background-color: #174EA6;
+}
+QPushButton#btnConnect:disabled {
+    background-color: #F1F3F4; color: #BDC1C6;
+}
+QPushButton#btnStop {
+    background-color: #EA4335; color: white; border: none;
+}
+QPushButton#btnStop:hover { background-color: #D32F2F; }
+
+QPushButton#btnDisconnect, QPushButton#btnNormal, QPushButton#btnViewSwitch {
+    background-color: #FFFFFF; border: 1px solid #DADCE0; color: #1A73E8;
+}
+QPushButton#btnDisconnect:hover, QPushButton#btnNormal:hover, QPushButton#btnViewSwitch:hover {
+    background-color: #F8F9FA; border-color: #1A73E8;
+}
+QPushButton#btnDisconnect:pressed { background-color: #E8F0FE; }
+
+/* 6. 下拉框 (ComboBox) - 布局修复版 */
+QComboBox {
+    background-color: #F1F3F4;
+    border: 1px solid transparent; /* 显式设置边框，辅助定位 */
     border-radius: 4px;
+    padding: 6px 10px;
+    padding-right: 35px; /* 必须大于 drop-down 的宽度 */
+    color: #202124;
+    min-height: 24px;
 }
-QMenuBar::item:selected {
-    background: #E0E0E0;
+QComboBox:hover {
+    background-color: #E8EAED;
+    border-bottom: 1px solid #5F6368;
 }
-QMenuBar::item:pressed {
-    background: #007BFF;
-    color: white;
-}
-
-/* Drop-down menu styling */
-QMenu {
-    background-color: #FFFFFF;
-    border: 1px solid #BDBDBD;
-    padding: 5px;
-}
-QMenu::item {
-    padding: 5px 25px 5px 20px;
-    border: 1px solid transparent;
+QComboBox:on {
+    background-color: #E8F0FE;
+    border-bottom: 2px solid #1A73E8;
 }
 
-QMenu::item:disabled {
-    color: #BDBDBD;
-    background: transparent;
+/* 下拉按钮区域 - 增加背景色以确保可见 */
+QComboBox::drop-down {
+    subcontrol-origin: padding;
+    subcontrol-position: top right;
+    width: 30px;
+    
+    border-left-width: 0px;
+    border-top-right-radius: 4px;
+    border-bottom-right-radius: 4px;
+    background-color: transparent; /* 默认透明，悬停变色 */
+}
+QComboBox::drop-down:hover {
+    background-color: #D2E3FC; /* 鼠标悬停时显示淡蓝色背景 */
 }
 
-QMenu::item:selected {
-    background-color: #007BFF;
-    color: #FFFFFF;
-}
-QMenu::indicator:checked {
-    background-color: #E0E0E0;
-    height: 12px;
+/* 下箭头 - 确保居中 */
+QComboBox::down-arrow {
     width: 12px;
-    margin-left: 5px;
+    height: 12px;
+    /* 加上引号，并使用一个肯定能用的黑色箭头 Base64 */
+    image: url("data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAwAAAAMCAYAAABWdVznAAAACXBIWXMAAA7EAAAOxAGVKw4bAAAAR0lEQVQokWNgwA34g/j/cfD/URQ5BswE6ccw4n/K4P+4xHE5B8QA6cexAfgVw+T/45f3f0wY3XZ0A/Ar/o9i4P9RDPzHqgAAkP52BOQy+mAAAAAASUVORK5CYII=");
 }
 
-/* SpinBox custom styling */
-QSpinBox, QDoubleSpinBox { padding-right: 28px; }
+
+/* --- 7. 数值输入框 (SpinBox) - 强力修复版 --- */
+QSpinBox, QDoubleSpinBox {
+    background-color: #F1F3F4;
+    border: 1px solid transparent;
+    border-radius: 4px;
+    color: #202124;
+    min-height: 30px;
+    padding-right: 30px; /* 为右侧按钮留出空间 */
+    padding-left: 10px;
+}
+QSpinBox:hover, QDoubleSpinBox:hover {
+    background-color: #E8EAED;
+    border-bottom: 1px solid #5F6368;
+}
+QSpinBox:focus, QDoubleSpinBox:focus {
+    background-color: #FFFFFF;
+    border-bottom: 2px solid #1A73E8;
+}
+
+/* 按钮区域通用设置 */
 QSpinBox::up-button, QDoubleSpinBox::up-button,
 QSpinBox::down-button, QDoubleSpinBox::down-button {
-    border: none;
-    background: transparent;
-    width: 26px;
-    subcontrol-origin: border;
-}
-QSpinBox::up-button, QDoubleSpinBox::up-button {
-    subcontrol-position: top right; top: 1px;
-}
-QSpinBox::down-button, QDoubleSpinBox::down-button {
-    subcontrol-position: bottom right; bottom: 1px;
-}
-QSpinBox::up-button:hover, QDoubleSpinBox::up-button:hover,
-QSpinBox::down-button:hover, QDoubleSpinBox::down-button:hover {
-    background-color: #E0E0E0; border-radius: 3px;
+    subcontrol-origin: border; /* 使用 border 盒模型定位 */
+    width: 28px; /* 略小于 padding-right */
+    border-left: 1px solid #DADCE0; /* 加上左边框 */
+    background-color: #F8F9FA; /* 给按钮一个默认背景色，防止“消失” */
 }
 
-/* 注意：如果你没有编译 resources.qrc，下面这两行可能会在控制台报警告，但不影响运行 */
+/* 上按钮 */
+QSpinBox::up-button, QDoubleSpinBox::up-button {
+    subcontrol-position: top right; /* 绝对定位到右上角 */
+    height: 15px; /* 高度的一半 */
+    border-top-right-radius: 4px;
+    margin-bottom: 0px;
+}
+
+/* 下按钮 */
+QSpinBox::down-button, QDoubleSpinBox::down-button {
+    subcontrol-position: bottom right; /* 绝对定位到右下角 */
+    height: 15px;
+    border-bottom-right-radius: 4px;
+    margin-top: 0px;
+}
+
+/* 按钮悬停/按下效果 */
+QSpinBox::up-button:hover, QDoubleSpinBox::up-button:hover,
+QSpinBox::down-button:hover, QDoubleSpinBox::down-button:hover {
+    background-color: #D2E3FC;
+}
+QSpinBox::up-button:pressed, QDoubleSpinBox::up-button:pressed,
+QSpinBox::down-button:pressed, QDoubleSpinBox::down-button:pressed {
+    background-color: #1A73E8;
+}
+
+/* 箭头图标 - 使用加引号的 Base64 */
 QSpinBox::up-arrow, QDoubleSpinBox::up-arrow {
-    image: url(:/icons/plus.svg); width: 14px; height: 14px;
+    width: 8px;
+    height: 8px;
+    image: url("data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAwAAAAMCAYAAABWdVznAAAACXBIWXMAAA7EAAAOxAGVKw4bAAAAN0lEQVQokWNgwA34g/j/cfD/URQ5BswE6ccw4n/K4P+4xHE5B8QA6cexAfgVw+T/45f3f0wY3XYAp95yBO084/AAAAAASUVORK5CYII=");
 }
 QSpinBox::down-arrow, QDoubleSpinBox::down-arrow {
-    image: url(:/icons/minus.svg); width: 14px; height: 14px;
+    width: 8px;
+    height: 8px;
+    image: url("data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAwAAAAMCAYAAABWdVznAAAACXBIWXMAAA7EAAAOxAGVKw4bAAAAR0lEQVQokWNgwA34g/j/cfD/URQ5BswE6ccw4n/K4P+4xHE5B8QA6cexAfgVw+T/45f3f0wY3XZ0A/Ar/o9i4P9RDPzHqgAAkP52BOQy+mAAAAAASUVORK5CYII=");
 }
+
+/* 箭头在按钮被按下时变白 (可选) */
+QSpinBox::up-button:pressed::up-arrow, QDoubleSpinBox::up-button:pressed::up-arrow,
+QSpinBox::down-button:pressed::down-arrow, QDoubleSpinBox::down-button:pressed::down-arrow {
+    /* 这里可以使用滤镜或者换一个白色的图片，为简单起见暂时不换图片，主要保证结构正确 */
+}
+
+/* 8. 其他 */
+QLabel { color: #5F6368; font-weight: 500; }
+QMenuBar { background-color: #FFFFFF; border-bottom: 1px solid #DADCE0; }
+QMenuBar::item { color: #5F6368; padding: 8px 12px; background: transparent; }
+QMenuBar::item:selected { background-color: #F1F3F4; color: #202124; border-radius: 4px; }
+QMenu { background-color: #FFFFFF; border: 1px solid #DADCE0; padding: 8px 0; border-radius: 8px; }
+QMenu::item { padding: 8px 32px 8px 16px; color: #3C4043; }
+QMenu::item:selected { background-color: #E8F0FE; color: #1967D2; }
 """
 
 if __name__ == '__main__':
+    #app.setStyle('Windows')
     app = QApplication(sys.argv)
 
     # 应用全局样式表
