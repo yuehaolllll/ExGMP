@@ -1,11 +1,12 @@
-# In ui/widgets/frequency_domain_widget.py
+# File: ui/widgets/frequency_domain_widget.py
+
 import pyqtgraph as pg
 from PyQt6.QtCore import pyqtSlot
 import numpy as np
 
 PLOT_COLORS = [
     "#007BFF", "#28A745", "#DC3545", "#17A2B8",
-    "#FD7E14", "#6F42C1", "#343A40", "#E83E8C"
+    "#FD7E14", "#6F42C1", "#343A40", "#E83E8C", "#6610f2", "#20c997"
 ]
 
 
@@ -15,18 +16,35 @@ class FrequencyDomainWidget(pg.GraphicsLayoutWidget):
         self.num_channels = 8
         self.curves = []
 
-        # 添加绘图区域
+        # --- 1. 初始化绘图区域 ---
+        # 设置内容边距，避免文字被边缘切断
+        self.ci.layout.setContentsMargins(5, 5, 5, 5)
+
         self.plot = self.addPlot(row=0, col=0)
         self.plot.setLabel('bottom', "Frequency", units='Hz')
         self.plot.setLabel('left', "Magnitude", units='µV')
+        self.plot.setTitle("Frequency Domain (FFT)")  # 增加标题
+
+        # 默认不使用 Log 模式 (线性刻度更适合观察特定的脑电频率峰值)
         self.plot.setLogMode(x=False, y=False)
 
-        # 限制 X 轴显示范围 (例如 0-120Hz 是脑电主要区域，300Hz 也行)
-        self.plot.setXRange(0, 120)
+        # --- 2. 性能与样式优化 ---
+        # 限制 X 轴显示范围 (0-60Hz 或 0-100Hz 是最常用的脑电区域)
+        self.plot.setXRange(0, 80)
         self.plot.showGrid(x=True, y=True, alpha=0.3)
 
-        # 性能优化：禁用鼠标右键菜单 (在大数据量下能减少一点开销)
-        self.plot.setMenuEnabled(False)
+        # 性能设置
+        self.plot.setDownsampling(auto=True, mode='peak')
+        self.plot.setClipToView(True)
+        self.plot.setMenuEnabled(False)  # 禁用右键菜单
+
+        # 视觉统一：添加灰色边框
+        self.plot.getViewBox().setBorder(pg.mkPen(color='#B0B0B0', width=1))
+
+        # 初始化图例
+        self.legend = self.plot.addLegend(offset=(10, 10))
+        # 设置图例半透明背景
+        self.legend.setBrush(pg.mkBrush(color=(255, 255, 255, 150)))
 
         self.reconfigure_channels(self.num_channels)
 
@@ -35,27 +53,28 @@ class FrequencyDomainWidget(pg.GraphicsLayoutWidget):
         """
         核心槽函数：清空并根据新的通道数重建FFT曲线和图例。
         """
-        if self.num_channels == num_channels and self.curves:
+        # 即使通道数没变，为了保险（防止颜色或图例错乱），这里允许重建
+        # 只要保证不频繁调用即可
+        if self.num_channels == num_channels and len(self.curves) == num_channels:
             return
 
         print(f"FrequencyDomainWidget: Reconfiguring UI for {num_channels} channels.")
         self.num_channels = num_channels
 
-        # --- 1. 清理旧的UI组件 ---
-        self.clear_plots()
+        # --- 1. 清理旧资源 ---
+        self.plot.clear()  # 这会移除所有 items (curves)
+        self.curves.clear()
 
-        # 清理图例 (更稳健的写法)
-        if self.plot.legend:
-            self.plot.legend.scene().removeItem(self.plot.legend)
-            self.plot.legend = None
+        # 重新添加图例 (clear() 可能不会移除 legend 对象，但会清空其内容)
+        if self.legend.scene() is None:
+            self.legend = self.plot.addLegend(offset=(10, 10))
+        else:
+            self.legend.clear()
 
-        # --- 2. 重新创建并添加图例 ---
-        # 先添加 Legend，再添加曲线，pyqtgraph 处理得更好
-        self.plot.addLegend(offset=(10, 10))
-
-        # --- 3. 重新创建曲线 ---
+        # --- 2. 重建曲线 ---
         for i in range(self.num_channels):
             color = PLOT_COLORS[i % len(PLOT_COLORS)]
+            # 创建曲线
             curve = self.plot.plot(
                 pen=pg.mkPen(color=color, width=1.5),
                 name=f"CH {i + 1}"
@@ -67,9 +86,8 @@ class FrequencyDomainWidget(pg.GraphicsLayoutWidget):
         """
         连接 DataProcessor 的 fft_data_ready 信号。
         """
-        # --- 核心优化 1：不可见时不更新 ---
-        # 如果 Widget 被隐藏（例如切换了 Tab），直接返回。
-        # 这能节省大量 CPU，防止阻塞主线程。
+        # --- 核心优化 1：不可见阻断 ---
+        # 节省 CPU，不可见时不进行任何绘图计算
         if not self.isVisible():
             return
 
@@ -77,59 +95,64 @@ class FrequencyDomainWidget(pg.GraphicsLayoutWidget):
 
     def plot_fft_data(self, freqs: np.ndarray, mags: np.ndarray):
         """通用的绘图逻辑"""
-        if mags.shape[0] != self.num_channels:
-            return
+        # 安全性检查
+        if mags.shape[0] != len(self.curves):
+            # 如果数据维度不匹配，尝试触发重构或直接返回
+            if mags.shape[0] == self.num_channels:
+                self.reconfigure_channels(self.num_channels)
+            else:
+                return
 
-        # 确保频率轴长度匹配 (有时候 fft freqs 可能比 mag 多/少 1 个点，视实现而定)
-        # 这里假设传入的数据已经是匹配的，或者 DataProcessor 做了切片
-        # 通常 freqs 长度等于 mags.shape[1]
+        # --- 核心优化 2：预处理与切片 ---
+        # 1. 去除直流分量 (Index 0, 0Hz)
+        # 直流分量通常巨大，会压缩有用信号的显示比例，必须去除
+        # 放在循环外切片，减少开销
+        if len(freqs) > 1:
+            f_data = freqs[1:]
+            m_data = mags[:, 1:]
+        else:
+            return  # 数据点太少
 
-        for i in range(self.num_channels):
-            if i < len(self.curves):
-                # 忽略直流分量 (index 0)，从 1 开始
-                # 只有当曲线可见时才更新数据 (虽然 FFT 通常全显示，但这是一个好习惯)
-                if self.curves[i].isVisible():
-                    self.curves[i].setData(freqs[1:], mags[i, 1:])
-
-        # --- 核心优化 2：移除循环内的强制 AutoRange ---
-        # 原代码：self.plot.enableAutoRange(axis='y', enable=True)
-        # 移除原因：
-        # 1. 性能开销巨大。
-        # 2. 导致用户无法手动缩放 Y 轴查看细节。
-        # 3. 导致画面抖动。
-
-        # 如果你确实希望一开始能自动缩放，可以在 __init__ 或 reconfigure 后调用一次即可。
-        # 或者，PyQtGraph 默认就会处理得很好（用户可以双击左键复位）。
+        # 2. 批量更新
+        # 使用 zip 同时遍历曲线和数据，避免索引查找
+        for curve, mag_row in zip(self.curves, m_data):
+            if curve.isVisible():
+                # --- 核心优化 3：skipFiniteCheck ---
+                # 极大提升 setData 速度
+                curve.setData(f_data, mag_row, skipFiniteCheck=True)
 
     def display_static_fft(self, freqs: np.ndarray, mags: np.ndarray, channel_names: list):
         """ ReviewDialog 使用的静态显示 """
+        # 确保通道数匹配
         if mags.shape[0] != self.num_channels:
             self.reconfigure_channels(mags.shape[0])
 
-        # 静态显示时，我们可能希望强制自动缩放一次，以便用户看清全貌
-        self.plot_fft_data(freqs, mags)
-        self.plot.autoRange()  # 静态显示时可以调用一次
-
+        # 更新名称
         if channel_names:
             for i, name in enumerate(channel_names):
                 self.update_channel_name(i, name)
 
+        # 绘制
+        self.plot_fft_data(freqs, mags)
+
+        # 静态显示时，自动缩放一次以便看清全貌
+        self.plot.autoRange()
+
     @pyqtSlot(int, str)
     def update_channel_name(self, channel: int, new_name: str):
         """更新图例名称"""
-        # 这是一个比较 tricky 的操作，因为 pyqtgraph 的 legend 更新比较繁琐
-        # 但你原来的 try-except 写法是可行的
-        if self.plot.legend and 0 <= channel < len(self.curves):
-            try:
-                # PyQTGraph 的 legend items 存储方式可能因版本而异
-                # 最稳健的方式通常是清空重建，但这里的 hack 也可以
-                label_item = self.plot.legend.items[channel][1]
-                label_item.setText(new_name)
-            except IndexError:
-                pass
+        if 0 <= channel < len(self.curves):
+            # 1. 更新曲线对象的内部名称
+            self.curves[channel].opts['name'] = new_name
+
+            # 2. PyQtGraph 的 Legend 更新比较繁琐，最稳健的方法是重建图例
+            # 这种操作不是高频的，所以重建是可以接受的
+            self.legend.clear()
+            for curve in self.curves:
+                self.legend.addItem(curve, curve.opts['name'])
 
     def clear_plots(self):
-        """移除所有曲线"""
+        """清空数据但保留曲线对象（用于重置状态）"""
+        empty = np.array([])
         for curve in self.curves:
-            self.plot.removeItem(curve)
-        self.curves.clear()
+            curve.setData(empty, empty)

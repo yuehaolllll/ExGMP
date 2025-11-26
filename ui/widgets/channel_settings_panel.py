@@ -1,8 +1,8 @@
 # File: ui/widgets/channel_settings_panel.py
 
 from PyQt6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QCheckBox,
-                             QLineEdit, QLabel, QScrollArea, QFrame)
-from PyQt6.QtCore import pyqtSignal, pyqtSlot, Qt
+                             QLineEdit, QLabel, QScrollArea, QFrame, QSizePolicy)
+from PyQt6.QtCore import pyqtSignal, pyqtSlot, Qt, QSize
 from functools import partial
 
 
@@ -13,39 +13,59 @@ class ChannelRow(QWidget):
         super().__init__(parent)
         self.index = index
 
+        # 行布局
         layout = QHBoxLayout(self)
-        # 减小上下边距，增加左右边距，让列表看起来更紧凑但宽敞
-        layout.setContentsMargins(15, 4, 15, 4)
-        layout.setSpacing(15)
+        layout.setContentsMargins(10, 2, 10, 2)
+        layout.setSpacing(12)
 
-        # 1. Checkbox (只负责开关)
+        # 1. Checkbox (纯 CSS 手绘风格)
         self.checkbox = QCheckBox()
         self.checkbox.setChecked(True)
         self.checkbox.setCursor(Qt.CursorShape.PointingHandCursor)
-        # 不需要设置固定宽度，让它自然适应
 
-        # 2. (已删除) 序号标签 self.lbl_idx -> 删掉！冗余！
+        self.checkbox.setStyleSheet("""
+            QCheckBox { spacing: 0px; }
+            QCheckBox::indicator { 
+                width: 18px; height: 18px; 
+                border: 2px solid #BDBDBD; 
+                border-radius: 4px;
+                background-color: white;
+            }
+            QCheckBox::indicator:hover { border-color: #1A73E8; }
+            QCheckBox::indicator:checked {
+                background-color: #1A73E8;
+                border: 2px solid #1A73E8;
+                image: none; 
+            }
+            QCheckBox::indicator:checked:hover {
+                background-color: #1557B0;
+                border-color: #1557B0;
+            }
+        """)
 
-        # 3. 名称输入框 (更像文本的样式)
+        # 2. 名称输入框
         self.name_edit = QLineEdit(name)
         self.name_edit.setPlaceholderText("Channel Name")
-        self.name_edit.setMinimumHeight(28)
-        # 使用样式表让它看起来更轻量：平时没有边框，鼠标悬停或聚焦时才显示
+        self.name_edit.setMinimumHeight(32)
+
         self.name_edit.setStyleSheet("""
             QLineEdit {
-                background: transparent;
+                background: #F5F5F5; 
                 border: 1px solid transparent;
+                border-bottom: 1px solid #E0E0E0;
                 border-radius: 4px;
                 color: #37474F;
                 font-weight: 500;
+                padding-left: 8px;
+                selection-background-color: #1A73E8;
             }
             QLineEdit:hover {
                 background-color: #FFFFFF;
-                border: 1px solid #E0E0E0;
+                border: 1px solid #BDBDBD;
             }
             QLineEdit:focus {
                 background-color: #FFFFFF;
-                border: 1px solid #1A73E8;
+                border: 2px solid #1A73E8;
                 color: #000000;
             }
         """)
@@ -53,9 +73,9 @@ class ChannelRow(QWidget):
         layout.addWidget(self.checkbox)
         layout.addWidget(self.name_edit)
 
-        # 整个行的悬停效果
+        # 行悬停效果
         self.setStyleSheet("""
-            ChannelRow:hover { background-color: #F5F7FA; border-radius: 6px; }
+            ChannelRow:hover { background-color: #F1F3F4; border-radius: 6px; }
         """)
 
 
@@ -68,22 +88,53 @@ class ChannelSettingsPanel(QWidget):
         self.num_channels = 0
         self.rows = []
 
+        # 允许面板随内容伸缩
+        self.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Minimum)
+
         # 主布局
         main_layout = QVBoxLayout(self)
         main_layout.setContentsMargins(0, 0, 0, 0)
 
         # 滚动区域
         self.scroll_area = QScrollArea()
-        self.scroll_area.setWidgetResizable(True)
+        self.scroll_area.setWidgetResizable(True)  # 关键：允许内部 Widget 决定大小
         self.scroll_area.setFrameShape(QFrame.Shape.NoFrame)
-        self.scroll_area.setStyleSheet("background: transparent;")  # 透明背景
+
+        # 滚动条样式优化
+        self.scroll_area.setStyleSheet("""
+            QScrollArea { background: transparent; border: none; }
+
+            QScrollBar:vertical {
+                border: none;
+                background: #F1F1F1; /* 浅灰槽背景，提示可以滚动 */
+                width: 8px;
+                margin: 0px;
+                border-radius: 4px;
+            }
+            QScrollBar::handle:vertical {
+                background: #BDBDBD;
+                min-height: 20px;
+                border-radius: 4px;
+            }
+            QScrollBar::handle:vertical:hover {
+                background: #9E9E9E;
+            }
+            QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {
+                height: 0px;
+            }
+            QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical {
+                background: transparent;
+            }
+        """)
 
         # 内容容器
         self.container = QWidget()
         self.container.setStyleSheet("background: transparent;")
         self.content_layout = QVBoxLayout(self.container)
-        self.content_layout.setContentsMargins(5, 5, 5, 5)
-        self.content_layout.setSpacing(2)  # 行间距紧凑一点
+        self.content_layout.setContentsMargins(5, 10, 5, 10)
+        self.content_layout.setSpacing(4)
+        # 关键：让布局紧凑，对齐顶部，不要均匀分布
+        self.content_layout.setAlignment(Qt.AlignmentFlag.AlignTop)
 
         self.scroll_area.setWidget(self.container)
         main_layout.addWidget(self.scroll_area)
@@ -95,29 +146,49 @@ class ChannelSettingsPanel(QWidget):
         if self.num_channels == num_channels: return
         self.num_channels = num_channels
 
-        # 清空旧控件
+        # 清空旧行
         while self.content_layout.count():
             item = self.content_layout.takeAt(0)
             if item.widget(): item.widget().deleteLater()
         self.rows = []
 
-        # 生成新行
+        # 添加新行
         for i in range(num_channels):
             row = ChannelRow(i, f"CH {i + 1}")
-
-            # 连接信号
-            # 注意 lambda 闭包陷阱，使用 default arg
             row.checkbox.stateChanged.connect(
                 lambda state, idx=i: self.channel_visibility_changed.emit(idx, bool(state))
             )
             row.name_edit.editingFinished.connect(
                 partial(self._on_name_changed, i)
             )
-
             self.content_layout.addWidget(row)
             self.rows.append(row)
 
-        self.content_layout.addStretch()  # 底部弹簧
+        # 这里不再添加 addStretch()，依靠 setAlignment(AlignTop) 保持紧凑
+
+        # 【核心步骤】通知 Qt 布局系统尺寸已改变
+        self.updateGeometry()
+        self.adjustSize()
+
+    def sizeHint(self):
+        """
+        动态计算高度：
+        - 如果内容较少，高度刚好包裹内容 (无留白)。
+        - 如果内容较多，高度限制在 400px，出现滚动条。
+        """
+        # 估算每行高度：32px(输入框) + 4px(间距) + 4px(上下padding) ≈ 40px
+        row_height_est = 40
+        margins = 20  # 容器的上下 margin
+
+        calculated_height = (self.num_channels * row_height_est) + margins
+
+        # 限制最大高度 (例如 400px)，超过则出现滚动条
+        max_height = 400
+
+        final_height = min(calculated_height, max_height)
+
+        # 宽度保持固定
+        return QSize(250, final_height)
 
     def _on_name_changed(self, index):
         new_name = self.rows[index].name_edit.text()

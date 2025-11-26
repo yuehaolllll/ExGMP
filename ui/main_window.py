@@ -32,14 +32,23 @@ from ui.widgets.recording_panel import RecordingPanel
 from ui.widgets.display_filter_panel import DisplayFilterPanel
 from ui.widgets.channel_settings_panel import ChannelSettingsPanel
 
+# --- 优化点 1: 资源路径缓存 ---
+_RESOURCE_CACHE = {}
+
 
 def resource_path(relative_path):
-    """ Get absolute path to resource, works for dev and for PyInstaller """
+    """ Get absolute path to resource, works for dev and for PyInstaller. Cached. """
+    if relative_path in _RESOURCE_CACHE:
+        return _RESOURCE_CACHE[relative_path]
+
     try:
         base_path = sys._MEIPASS
     except Exception:
         base_path = os.path.abspath(".")
-    return os.path.join(base_path, relative_path)
+
+    path = os.path.join(base_path, relative_path)
+    _RESOURCE_CACHE[relative_path] = path
+    return path
 
 
 class FileSaver(QObject):
@@ -62,6 +71,8 @@ class FileLoader(QObject):
             data = mat['data']
             sampling_rate = float(mat['sampling_rate'])
             channel_names = mat.get('channels', [f'CH {i + 1}' for i in range(data.shape[0])])
+
+            # 确保 channel_names 是列表
             if isinstance(channel_names, str):
                 channel_names = [channel_names]
             else:
@@ -87,6 +98,7 @@ class FileLoader(QObject):
                 }
 
             n_samples = data.shape[1]
+            # 计算 FFT 用于预览
             windowed_data = data * np.hanning(n_samples)
             magnitudes = np.abs(np.fft.rfft(windowed_data, axis=1)) / n_samples
             frequencies = np.fft.rfftfreq(n_samples, 1.0 / sampling_rate)
@@ -114,6 +126,7 @@ class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
 
+        # 延迟导入非核心 UI 组件，加快启动速度
         from .widgets.refined_ble_scan_dialog import RefinedBleScanDialog
         from .widgets.splash_widget import SplashWidget
         from processing.acquisition_controller import AcquisitionController
@@ -149,6 +162,7 @@ class MainWindow(QMainWindow):
         self.is_session_running = False
         self.receiver_thread = None
         self.receiver_instance = None
+        self.save_thread = None  # 初始化保存线程变量
         self.is_shutting_down = False
         self.current_connection_message = "Disconnected"
 
@@ -187,7 +201,6 @@ class MainWindow(QMainWindow):
         available_geometry = QGuiApplication.primaryScreen().availableGeometry()
         w, h = available_geometry.width(), available_geometry.height()
 
-        # 智能计算窗口尺寸 (4:3)
         target_h = int(min(w, h) * 0.85)
         target_w = int(target_h * 1.33)
         self.resize(max(target_w, 1100), max(target_h, 750))
@@ -269,7 +282,7 @@ class MainWindow(QMainWindow):
         about_action.triggered.connect(self.show_about_dialog)
         help_menu.addAction(about_action)
 
-        # Status Bar (Right Corner)
+        # Status Bar
         self.header_bar = HeaderStatusWidget()
         menu_bar.setCornerWidget(self.header_bar, Qt.Corner.TopRightCorner)
 
@@ -369,12 +382,13 @@ class MainWindow(QMainWindow):
         if conn_type == "WiFi":
             self.start_session(conn_type)
         elif conn_type == "Bluetooth":
-            self.ble_scan_dialog.device_selected.connect(self.on_ble_device_selected)
-            self.ble_scan_dialog.exec_and_scan()
+            # 避免多次连接槽
             try:
                 self.ble_scan_dialog.device_selected.disconnect(self.on_ble_device_selected)
             except TypeError:
                 pass
+            self.ble_scan_dialog.device_selected.connect(self.on_ble_device_selected)
+            self.ble_scan_dialog.exec_and_scan()
         elif conn_type == "Serial (UART)":
             self.start_session(conn_type, params=params)
 
@@ -446,7 +460,6 @@ class MainWindow(QMainWindow):
 
         # 4. 连接信号
         if conn_type == "WiFi":
-            # 单次连接，防止重复触发
             self.receiver_instance.connection_status.connect(
                 self.on_wifi_connected_send_commands,
                 type=Qt.ConnectionType.SingleShotConnection
@@ -467,7 +480,10 @@ class MainWindow(QMainWindow):
         self.receiver_thread.finished.connect(self.on_receiver_thread_finished)
 
         self.receiver_thread.start()
-        self.processor_thread.start()
+        # 确保 Processor 已经启动（通常在 init 已启动，但这里双保险）
+        if not self.processor_thread.isRunning():
+            self.processor_thread.start()
+
         self.time_domain_widget.start_updates()
 
     def stop_session(self, blocking=False):
@@ -480,7 +496,7 @@ class MainWindow(QMainWindow):
         self.update_ui_on_connection(False)
         self.header_bar.update_status_message("Disconnecting...")
 
-        # 断开信号
+        # 断开信号 (使用 try-except 防止重复断开报错)
         if self.receiver_instance:
             try:
                 self.receiver_instance.connection_status.disconnect(self.on_connection_status_changed)
@@ -488,24 +504,18 @@ class MainWindow(QMainWindow):
             except TypeError:
                 pass
 
-        if self.data_processor:
-            try:
-                self.data_processor.stats_ready.disconnect(self.header_bar.update_stats)
-            except TypeError:
-                pass
+        # 停止 Processor 中的录制
+        if self.data_processor and self.data_processor.is_recording:
+            self.data_processor.stop_recording()
 
-        # 停止线程
-        if self.processor_thread and self.processor_thread.isRunning():
-            self.data_processor.stop()
-            self.processor_thread.quit()
-            if blocking: self.processor_thread.wait()
-
+        # 停止 Receiver 线程
         if self.receiver_instance:
             self.receiver_instance.stop()
 
         if self.receiver_thread and self.receiver_thread.isRunning():
             self.receiver_thread.quit()
-            if blocking: self.receiver_thread.wait(2000)
+            if blocking:
+                self.receiver_thread.wait(2000)
 
     def on_receiver_thread_finished(self):
         """线程结束回调"""
@@ -573,7 +583,12 @@ class MainWindow(QMainWindow):
         self.recording_panel.set_session_active(True)
         self.recording_panel.set_recording_state(False)
         self.header_bar.update_status_message(status_to_display)
-        self.save_thread.quit()
+
+        # 释放保存线程引用
+        if self.save_thread:
+            self.save_thread.quit()
+            self.save_thread.wait()
+            self.save_thread = None
 
     def _on_start_recording_clicked(self):
         current_names = self.channel_settings_panel.get_channel_names()
@@ -603,17 +618,36 @@ class MainWindow(QMainWindow):
 
         self.update_ui_on_connection(self.is_session_running)
 
+    # --- 优化点 2: 安全退出 ---
     def closeEvent(self, event):
+        # 1. 检查是否有数据正在保存
+        if self.save_thread and self.save_thread.isRunning():
+            QMessageBox.warning(self, "Warning", "Data is currently being saved. Please wait.")
+            event.ignore()
+            return
+
         self.is_shutting_down = True
         print("Close event triggered.")
 
-        # 清理所有持久线程
-        for thread in [self.eog_model_controller_thread, self.ica_thread]:
-            if thread and thread.isRunning():
-                thread.quit()
-                thread.wait()
-
+        # 2. 停止会话
         self.stop_session(blocking=True)
+
+        # 3. 停止 Processor 内部定时器
+        if self.data_processor:
+            self.data_processor.stop()
+
+        # 4. 退出所有持久线程
+        threads_to_wait = [
+            self.processor_thread,
+            self.ica_thread,
+            self.eog_model_controller_thread
+        ]
+
+        for t in threads_to_wait:
+            if t and t.isRunning():
+                t.quit()
+                t.wait(1000)  # 等待最多 1 秒
+
         print("All threads stopped. Closing.")
         event.accept()
 
@@ -650,6 +684,9 @@ class MainWindow(QMainWindow):
         except TypeError:
             pass
 
+        self.eye_typing_dialog.deleteLater()
+        self.eye_typing_dialog = None
+
     @pyqtSlot(np.ndarray)
     def _on_calibration_data_ready(self, data):
         self.tools_panel.set_training_state()
@@ -678,6 +715,8 @@ class MainWindow(QMainWindow):
         else:
             self.tools_panel.update_status(self.is_session_running)
 
+        dialog.deleteLater()
+
     @pyqtSlot(str)
     def _on_ica_training_failed(self, error_message):
         QMessageBox.critical(self, "ICA Training Error", error_message)
@@ -685,15 +724,14 @@ class MainWindow(QMainWindow):
 
     @pyqtSlot(str)
     def on_wifi_connected_send_commands(self, message):
-        # 此时连接必定已成功（信号已在 start_session 中过滤）
         print("Wi-Fi connected. Sending configuration commands...")
 
-        rate_map = {250: 0x87, 500: 0x86, 1000: 0x85, 2000: 0x84, 4000: 0x83}
-        # rate_map = {250: 0x96, 500: 0x95, 1000: 0x94, 2000: 0x93, 4000: 0x92}
+        # 采样率配置码表
+        rate_map = {250: 0x96, 500: 0x95, 1000: 0x94, 2000: 0x93, 4000: 0x92, 8000: 0x91, 16000: 0x90}
         current_rate = self.settings_panel.get_current_sample_rate()
         current_channels = self.settings_panel.get_current_channels()
 
-        sample_rate_code = rate_map.get(current_rate, 0x85)
+        sample_rate_code = rate_map.get(current_rate, 0x94)
         channel_mask = (1 << current_channels) - 1
 
         self.receiver_instance.update_active_channels(current_channels)

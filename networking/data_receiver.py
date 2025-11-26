@@ -1,3 +1,247 @@
+# # File: networking/data_receiver.py
+#
+# import socket
+# import numpy as np
+# from PyQt6.QtCore import QObject, pyqtSignal, pyqtSlot
+# import struct
+#
+# # --- 常量 ---
+# HOST = '192.168.4.1'
+# PORT = 3333
+# PACKET_HEADER = b'\xaa\xbb\xcc\xdd'
+# MAX_BUFFER_SIZE = 1024 * 1024  # 1MB 缓冲上限，防止溢出
+#
+# # CRC16-CCITT (0x1021) 查表法优化
+# _crc_table = [
+#     0x0000, 0x1021, 0x2042, 0x3063, 0x4084, 0x50a5, 0x60c6, 0x70e7,
+#     0x8108, 0x9129, 0xa14a, 0xb16b, 0xc18c, 0xd1ad, 0xe1ce, 0xf1ef,
+#     0x1231, 0x0210, 0x3273, 0x2252, 0x52b5, 0x4294, 0x72f7, 0x62d6,
+#     0x9339, 0x8318, 0xb37b, 0xa35a, 0xd3bd, 0xc39c, 0xf3ff, 0xe3de,
+#     0x2462, 0x3443, 0x0420, 0x1401, 0x64e6, 0x74c7, 0x44a4, 0x5485,
+#     0xa56a, 0xb54b, 0x8528, 0x9509, 0xe5ee, 0xf5cf, 0xc5ac, 0xd58d,
+#     0x3653, 0x2672, 0x1611, 0x0630, 0x76d7, 0x66f6, 0x5695, 0x46b4,
+#     0xb75b, 0xa77a, 0x9719, 0x8738, 0xf7df, 0xe7fe, 0xd79d, 0xc7bc,
+#     0x48c4, 0x58e5, 0x6886, 0x78a7, 0x0840, 0x1861, 0x2802, 0x3823,
+#     0xc9cc, 0xd9ed, 0xe98e, 0xf9af, 0x8948, 0x9969, 0xa90a, 0xb92b,
+#     0x5af5, 0x4ad4, 0x7ab7, 0x6a96, 0x1a71, 0x0a50, 0x3a33, 0x2a12,
+#     0xdbfd, 0xcbdc, 0xfbbf, 0xeb9e, 0x9b79, 0x8b58, 0xbb3b, 0xab1a,
+#     0x6ca6, 0x7c87, 0x4ce4, 0x5cc5, 0x2c22, 0x3c03, 0x0c60, 0x1c41,
+#     0xedae, 0xfd8f, 0xcdec, 0xddcd, 0xad2a, 0xbd0b, 0x8d68, 0x9d49,
+#     0x7e97, 0x6eb6, 0x5ed5, 0x4ef4, 0x3e13, 0x2e32, 0x1e51, 0x0e70,
+#     0xff9f, 0xefbe, 0xdfdd, 0xcffc, 0xbf1b, 0xaf3a, 0x9f59, 0x8f78,
+#     0x9188, 0x81a9, 0xb1ca, 0xa1eb, 0xd10c, 0xc12d, 0xf14e, 0xe16f,
+#     0x1080, 0x00a1, 0x30c2, 0x20e3, 0x5004, 0x4025, 0x7046, 0x6067,
+#     0x83b9, 0x9398, 0xa3fb, 0xb3da, 0xc33d, 0xd31c, 0xe37f, 0xf35e,
+#     0x02b1, 0x1290, 0x22f3, 0x32d2, 0x4235, 0x5214, 0x6277, 0x7256,
+#     0xb5ea, 0xa5cb, 0x95a8, 0x8589, 0xf56e, 0xe54f, 0xd52c, 0xc50d,
+#     0x34e2, 0x24c3, 0x14a0, 0x0481, 0x7466, 0x6447, 0x5424, 0x4405,
+#     0xa7db, 0xb7fa, 0x8799, 0x97b8, 0xe75f, 0xf77e, 0xc71d, 0xd73c,
+#     0x26d3, 0x36f2, 0x0691, 0x16b0, 0x6657, 0x7676, 0x4615, 0x5634,
+#     0xd94c, 0xc96d, 0xf90e, 0xe92f, 0x99c8, 0x89e9, 0xb98a, 0xa9ab,
+#     0x5844, 0x4865, 0x7806, 0x6827, 0x18c0, 0x08e1, 0x3882, 0x28a3,
+#     0xcb7d, 0xdb5c, 0xeb3f, 0xfb1e, 0x8bf9, 0x9bd8, 0xabbb, 0xbb9a,
+#     0x4a75, 0x5a54, 0x6a37, 0x7a16, 0x0af1, 0x1ad0, 0x2ab3, 0x3a92,
+#     0xfd2e, 0xed0f, 0xdd6c, 0xcd4d, 0xbdaa, 0xad8b, 0x9de8, 0x8dc9,
+#     0x7c26, 0x6c07, 0x5c64, 0x4c45, 0x3ca2, 0x2c83, 0x1ce0, 0x0cc1,
+#     0xef1f, 0xff3e, 0xcf5d, 0xdf7c, 0xaf9b, 0xbfba, 0x8fd9, 0x9ff8,
+#     0x6e17, 0x7e36, 0x4e55, 0x5e74, 0x2e93, 0x3eb2, 0x0ed1, 0x1ef0
+# ]
+#
+#
+# def crc16_ccitt_fast(data: bytes) -> int:
+#     """
+#     使用查表法计算CRC16-CCITT，极大提升Python中的计算速度。
+#     并解决Python无限精度整数导致的索引越界问题。
+#     """
+#     crc = 0xFFFF
+#     for byte in data:
+#         index = ((crc >> 8) ^ byte) & 0xFF
+#         crc = ((crc << 8) ^ _crc_table[index]) & 0xFFFF
+#     return crc
+#
+#
+# class DataReceiver(QObject):
+#     connection_status = pyqtSignal(str)
+#     raw_data_received = pyqtSignal(np.ndarray)
+#
+#     def __init__(self, num_channels, v_ref, gain):
+#         super().__init__()
+#         self.sock = None
+#         self._is_running = False
+#
+#         self.active_channels = num_channels
+#         self.lsb_to_uv = (v_ref / gain / (2 ** 23 - 1)) * 1e6
+#         self.v_ref = v_ref
+#         self.gain = gain
+#         self.num_frames_per_packet = 50
+#
+#         self.packet_size = 0
+#         self.frame_size = 0
+#         self._update_packet_size()
+#
+#         self.last_sequence_number = -1
+#
+#     @pyqtSlot(int)
+#     def update_active_channels(self, active_channel_count):
+#         print(f"DataReceiver: Updating active channels to {active_channel_count}")
+#         self.active_channels = active_channel_count
+#         self._update_packet_size()
+#
+#     def _update_packet_size(self):
+#         # 每帧 = 3字节Header(Status) + N * 3字节Data
+#         self.frame_size = 3 + self.active_channels * 3
+#
+#         self.packet_payload_size = self.frame_size * self.num_frames_per_packet
+#         self.packet_seq_num_size = 4
+#         self.packet_crc_size = 2
+#         # Header(4) + Seq(4) + Payload + CRC(2)
+#         self.packet_size = 4 + self.packet_seq_num_size + self.packet_payload_size + self.packet_crc_size
+#         print(f"DataReceiver: Packet size recalculated: {self.packet_size} bytes")
+#
+#     @pyqtSlot(int)
+#     def set_frames_per_packet(self, frames):
+#         if self.num_frames_per_packet == frames: return
+#         self.num_frames_per_packet = frames
+#         self._update_packet_size()
+#         print(f"WiFi Receiver: Frames/packet set to {frames}")
+#
+#     @pyqtSlot(float)
+#     def set_gain(self, new_gain):
+#         if self.gain != new_gain:
+#             print(f"DataReceiver: Updating gain to x{new_gain}")
+#             self.gain = new_gain
+#             self.lsb_to_uv = (self.v_ref / self.gain / (2 ** 23 - 1)) * 1e6
+#
+#     def _parse_packet_vectorized(self, payload):
+#         try:
+#             frames = np.frombuffer(payload, dtype=np.uint8).reshape((self.num_frames_per_packet, self.frame_size))
+#             channel_data = frames[:, 3:]
+#
+#             reshaped_data = channel_data.reshape((self.num_frames_per_packet, self.active_channels, 3))
+#
+#             b1 = reshaped_data[:, :, 0].astype(np.int32)
+#             b2 = reshaped_data[:, :, 1].astype(np.int32)
+#             b3 = reshaped_data[:, :, 2].astype(np.int32)
+#
+#             raw_vals = (b1 << 16) | (b2 << 8) | b3
+#             raw_vals[raw_vals >= 0x800000] -= 0x1000000
+#
+#             return (raw_vals * self.lsb_to_uv).astype(np.float32).T
+#
+#         except ValueError as e:
+#             print(f"Parse Error: {e}")
+#             return np.zeros((self.active_channels, 0))
+#
+#     @pyqtSlot()
+#     def run(self):
+#         self._is_running = True
+#         buffer = bytearray()
+#         self.last_sequence_number = -1
+#
+#         try:
+#             self.sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+#             self.sock.settimeout(2.0)  # 稍微放宽超时时间
+#             self.connection_status.emit(f"Connecting to {HOST}:{PORT}...")
+#             self.sock.connect((HOST, PORT))
+#
+#             # 优化 Socket 缓冲区
+#             new_buf_size = 4 * 1024 * 1024  # 4MB
+#             self.sock.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, new_buf_size)
+#             print(f"DataReceiver: Socket recv buffer set to {new_buf_size}")
+#
+#             self.connection_status.emit(f"Connected to {HOST}:{PORT}")
+#
+#             while self._is_running:
+#                 try:
+#                     # 增大单次读取量，减少系统调用次数
+#                     data = self.sock.recv(8192)
+#                     if not data:
+#                         if self._is_running: self.connection_status.emit("Connection closed by server")
+#                         break
+#
+#                     buffer.extend(data)
+#
+#                     # 缓冲区保护
+#                     if len(buffer) > MAX_BUFFER_SIZE:
+#                         print("Buffer overflow! Clearing.")
+#                         buffer.clear()
+#                         continue
+#
+#                     while True:
+#                         header_index = buffer.find(PACKET_HEADER)
+#                         if header_index == -1:
+#                             break
+#
+#                         if header_index > 0:
+#                             del buffer[:header_index]
+#
+#                         if len(buffer) < self.packet_size:
+#                             break
+#
+#                         # 提取完整包
+#                         raw_packet = bytes(buffer[:self.packet_size])
+#                         del buffer[:self.packet_size]
+#
+#                         try:
+#                             seq_num = struct.unpack('>I', raw_packet[4:8])[0]
+#                             received_crc = struct.unpack('>H', raw_packet[-2:])[0]
+#                         except struct.error:
+#                             continue
+#
+#                         # # CRC 校验 (快速查表)
+#                         # data_to_check = raw_packet[4:-2]
+#                         # calculated_crc = crc16_ccitt_fast(data_to_check)
+#                         #
+#                         # if received_crc != calculated_crc:
+#                         #     print(f"CRC Error: Pkt {seq_num}")
+#                         #     continue
+#
+#                         # 丢包检测
+#                         if self.last_sequence_number != -1:
+#                             diff = seq_num - self.last_sequence_number
+#                             if diff != 1:
+#                                 if not (self.last_sequence_number > 0xFFFFFF00 and seq_num < 100):
+#                                     print(
+#                                         f"Lost {diff - 1} packets (Prev: {self.last_sequence_number}, Curr: {seq_num})")
+#
+#                         self.last_sequence_number = seq_num
+#
+#                         # 解析负载
+#                         payload = raw_packet[8:-2]
+#                         parsed_data = self._parse_packet_vectorized(payload)
+#                         self.raw_data_received.emit(parsed_data)
+#
+#                 except socket.timeout:
+#                     continue
+#                 except socket.error as e:
+#                     if self._is_running: self.connection_status.emit(f"Socket Error: {e}")
+#                     break
+#
+#         except socket.error as e:
+#             if self._is_running: self.connection_status.emit(f"Connection Failed: {e}")
+#         finally:
+#             if self.sock: self.sock.close()
+#             if self._is_running: self.connection_status.emit("Disconnected")
+#             self._is_running = False
+#
+#     def send_command(self, command_bytes):
+#         if self.sock and self._is_running:
+#             try:
+#                 self.sock.sendall(command_bytes)
+#             except socket.error as e:
+#                 print(f"Command send error: {e}")
+#
+#     def stop(self):
+#         self._is_running = False
+#         if self.sock:
+#             try:
+#                 self.sock.shutdown(socket.SHUT_RDWR)
+#             except:
+#                 pass
+#             self.sock.close()
+
+# File: networking/data_receiver.py
+
 # File: networking/data_receiver.py
 
 import socket
@@ -9,9 +253,9 @@ import struct
 HOST = '192.168.4.1'
 PORT = 3333
 PACKET_HEADER = b'\xaa\xbb\xcc\xdd'
-MAX_BUFFER_SIZE = 1024 * 1024  # 1MB 缓冲上限，防止溢出
+MAX_BUFFER_SIZE = 1024 * 1024  # 1MB 缓冲上限
 
-# CRC16-CCITT (0x1021) 查表法优化
+# CRC16-CCITT (0x1021) 查表
 _crc_table = [
     0x0000, 0x1021, 0x2042, 0x3063, 0x4084, 0x50a5, 0x60c6, 0x70e7,
     0x8108, 0x9129, 0xa14a, 0xb16b, 0xc18c, 0xd1ad, 0xe1ce, 0xf1ef,
@@ -49,10 +293,7 @@ _crc_table = [
 
 
 def crc16_ccitt_fast(data: bytes) -> int:
-    """
-    使用查表法计算CRC16-CCITT，极大提升Python中的计算速度。
-    并解决Python无限精度整数导致的索引越界问题。
-    """
+    """查表法计算CRC16-CCITT"""
     crc = 0xFFFF
     for byte in data:
         index = ((crc >> 8) ^ byte) & 0xFF
@@ -70,16 +311,24 @@ class DataReceiver(QObject):
         self._is_running = False
 
         self.active_channels = num_channels
-        self.lsb_to_uv = (v_ref / gain / (2 ** 23 - 1)) * 1e6
         self.v_ref = v_ref
         self.gain = gain
-        self.num_frames_per_packet = 50
+        self.lsb_to_uv = 0.0
+        self._recalculate_conversion_factor()
 
+        self.num_frames_per_packet = 50
         self.packet_size = 0
         self.frame_size = 0
+        self.packet_payload_size = 0
         self._update_packet_size()
 
         self.last_sequence_number = -1
+
+    def _recalculate_conversion_factor(self):
+        if self.gain != 0:
+            self.lsb_to_uv = (self.v_ref / self.gain / (2 ** 23 - 1)) * 1e6
+        else:
+            self.lsb_to_uv = 0.0
 
     @pyqtSlot(int)
     def update_active_channels(self, active_channel_count):
@@ -92,10 +341,8 @@ class DataReceiver(QObject):
         self.frame_size = 3 + self.active_channels * 3
 
         self.packet_payload_size = self.frame_size * self.num_frames_per_packet
-        self.packet_seq_num_size = 4
-        self.packet_crc_size = 2
         # Header(4) + Seq(4) + Payload + CRC(2)
-        self.packet_size = 4 + self.packet_seq_num_size + self.packet_payload_size + self.packet_crc_size
+        self.packet_size = 4 + 4 + self.packet_payload_size + 2
         print(f"DataReceiver: Packet size recalculated: {self.packet_size} bytes")
 
     @pyqtSlot(int)
@@ -110,22 +357,35 @@ class DataReceiver(QObject):
         if self.gain != new_gain:
             print(f"DataReceiver: Updating gain to x{new_gain}")
             self.gain = new_gain
-            self.lsb_to_uv = (self.v_ref / self.gain / (2 ** 23 - 1)) * 1e6
+            self._recalculate_conversion_factor()
 
-    def _parse_packet_vectorized(self, payload):
+    def _parse_packet_vectorized(self, payload_view):
+        """
+        优化后的解析函数：
+        1. 直接使用 memoryview/buffer 接口。
+        2. 使用位运算进行 24-bit 补码转换。
+        """
         try:
-            frames = np.frombuffer(payload, dtype=np.uint8).reshape((self.num_frames_per_packet, self.frame_size))
-            channel_data = frames[:, 3:]
+            # np.frombuffer 会增加 payload_view 的引用计数，
+            # 但生成的 frames 只要在这个函数结束时销毁，引用就会释放。
+            frames = np.frombuffer(payload_view, dtype=np.uint8).reshape((self.num_frames_per_packet, self.frame_size))
 
+            # channel_data 是 NumPy 的 View，仍然引用内存
+            channel_data = frames[:, 3:]
             reshaped_data = channel_data.reshape((self.num_frames_per_packet, self.active_channels, 3))
 
+            # astype(np.int32) 会创建数据副本（Copy），
+            # 此时 b1, b2, b3 已经拥有了自己的内存，不再依赖 buffer
             b1 = reshaped_data[:, :, 0].astype(np.int32)
             b2 = reshaped_data[:, :, 1].astype(np.int32)
             b3 = reshaped_data[:, :, 2].astype(np.int32)
 
             raw_vals = (b1 << 16) | (b2 << 8) | b3
-            raw_vals[raw_vals >= 0x800000] -= 0x1000000
 
+            # 位运算处理符号位扩展
+            raw_vals = (raw_vals << 8) >> 8
+
+            # 返回处理后的 float 数组（也是新的内存）
             return (raw_vals * self.lsb_to_uv).astype(np.float32).T
 
         except ValueError as e:
@@ -140,12 +400,11 @@ class DataReceiver(QObject):
 
         try:
             self.sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            self.sock.settimeout(2.0)  # 稍微放宽超时时间
+            self.sock.settimeout(2.0)
             self.connection_status.emit(f"Connecting to {HOST}:{PORT}...")
             self.sock.connect((HOST, PORT))
 
-            # 优化 Socket 缓冲区
-            new_buf_size = 256 * 1024  # 256KB
+            new_buf_size = 4 * 1024 * 1024
             self.sock.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, new_buf_size)
             print(f"DataReceiver: Socket recv buffer set to {new_buf_size}")
 
@@ -153,23 +412,27 @@ class DataReceiver(QObject):
 
             while self._is_running:
                 try:
-                    # 增大单次读取量，减少系统调用次数
-                    data = self.sock.recv(8192)
+                    data = self.sock.recv(16384)
                     if not data:
                         if self._is_running: self.connection_status.emit("Connection closed by server")
                         break
 
                     buffer.extend(data)
 
-                    # 缓冲区保护
                     if len(buffer) > MAX_BUFFER_SIZE:
                         print("Buffer overflow! Clearing.")
                         buffer.clear()
                         continue
 
                     while True:
+                        if len(buffer) < self.packet_size:
+                            break
+
                         header_index = buffer.find(PACKET_HEADER)
+
                         if header_index == -1:
+                            if len(buffer) > self.packet_size * 2:
+                                del buffer[:-self.packet_size]
                             break
 
                         if header_index > 0:
@@ -178,38 +441,44 @@ class DataReceiver(QObject):
                         if len(buffer) < self.packet_size:
                             break
 
-                        # 提取完整包
-                        raw_packet = bytes(buffer[:self.packet_size])
-                        del buffer[:self.packet_size]
+                        # === 关键修正开始 ===
+
+                        # 1. 创建 memoryview
+                        buffer_view = memoryview(buffer)
 
                         try:
-                            seq_num = struct.unpack('>I', raw_packet[4:8])[0]
-                            received_crc = struct.unpack('>H', raw_packet[-2:])[0]
+                            # 尝试解析 Seq Num，如果失败说明数据不足（理论上前面检查过长度了，但这层保护依然必要）
+                            seq_num = struct.unpack_from('>I', buffer_view, 4)[0]
                         except struct.error:
-                            continue
+                            # 如果出错，必须在 break 前释放 view
+                            buffer_view.release()
+                            break
 
-                        # CRC 校验 (快速查表)
-                        data_to_check = raw_packet[4:-2]
-                        calculated_crc = crc16_ccitt_fast(data_to_check)
-
-                        if received_crc != calculated_crc:
-                            print(f"CRC Error: Pkt {seq_num}")
-                            continue
-
-                        # 丢包检测
                         if self.last_sequence_number != -1:
                             diff = seq_num - self.last_sequence_number
                             if diff != 1:
                                 if not (self.last_sequence_number > 0xFFFFFF00 and seq_num < 100):
                                     print(
                                         f"Lost {diff - 1} packets (Prev: {self.last_sequence_number}, Curr: {seq_num})")
-
                         self.last_sequence_number = seq_num
 
-                        # 解析负载
-                        payload = raw_packet[8:-2]
-                        parsed_data = self._parse_packet_vectorized(payload)
+                        # 2. 切片 Payload
+                        # 注意：slice memoryview 也会创建一个新的 memoryview 对象
+                        payload_view = buffer_view[8: self.packet_size - 2]
+
+                        # 3. 处理数据
+                        # 函数内部会生成数据的副本（Copy），不会长期持有 view
+                        parsed_data = self._parse_packet_vectorized(payload_view)
                         self.raw_data_received.emit(parsed_data)
+
+                        # 4. 【重要】在修改 buffer 之前，必须显式释放所有 view
+                        payload_view.release()
+                        buffer_view.release()
+
+                        # 5. 安全地删除缓冲区数据
+                        del buffer[:self.packet_size]
+
+                        # === 关键修正结束 ===
 
                 except socket.timeout:
                     continue

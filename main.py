@@ -78,7 +78,7 @@ QRadioButton:hover { background-color: #F1F3F4; }
 QRadioButton:checked { background-color: #E8F0FE; color: #1967D2; font-weight: 600; }
 
 QRadioButton::indicator {
-    width: 16px; height: 16px;
+    width: 12px; height: 12px;
     border-radius: 9px;
     background-color: #FFFFFF;
     image: none;
@@ -90,7 +90,7 @@ QRadioButton::indicator:checked {
     background-color: #FFFFFF;
 }
 
-/* 4. 复选框 (CheckBox) - 修复对号显示 */
+/* 4. 复选框 (CheckBox)  */
 QCheckBox {
     spacing: 10px; color: #3C4043; font-weight: 400;
 }
@@ -164,7 +164,7 @@ QComboBox::drop-down {
     subcontrol-origin: padding;
     subcontrol-position: top right;
     width: 30px;
-    
+
     border-left-width: 0px;
     border-top-right-radius: 4px;
     border-bottom-right-radius: 4px;
@@ -267,6 +267,7 @@ QMenu::item:selected { background-color: #E8F0FE; color: #1967D2; }
 
 if __name__ == '__main__':
     #app.setStyle('Windows')
+    os.environ["QT_ENABLE_HIGHDPI_SCALING"] = "1"
     app = QApplication(sys.argv)
 
     # 应用全局样式表

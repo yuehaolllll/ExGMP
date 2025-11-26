@@ -4,17 +4,13 @@ import sys
 from PyQt6.QtWidgets import (QDialog, QWidget, QVBoxLayout, QHBoxLayout, QGridLayout,
                              QPushButton, QLineEdit, QLabel, QFrame, QGraphicsDropShadowEffect,
                              QSizePolicy, QApplication)
-from PyQt6.QtCore import Qt, QSize
+from PyQt6.QtCore import Qt, QSize, QPoint
 from PyQt6.QtGui import QColor, QFont
 
-# --- 核心数据结构 ---
-# 1. 上方组 (高频元音)
+# --- 核心数据结构 (保持不变) ---
 GROUP_UP = {'UP': 'A', 'RIGHT': 'E', 'DOWN': 'I', 'LEFT': 'O', 'CENTER': 'U'}
-# 2. 右侧组 (高频辅音)
 GROUP_RIGHT = {'UP': 'T', 'RIGHT': 'N', 'DOWN': 'S', 'LEFT': 'R', 'CENTER': 'H'}
-# 3. 下方组 (中频辅音)
 GROUP_DOWN = {'UP': 'D', 'RIGHT': 'L', 'DOWN': 'C', 'LEFT': 'M', 'CENTER': 'W'}
-# 4. 左侧组 (低频区 - 分页模式)
 GROUP_LEFT_PAGES = [
     {'UP': 'G', 'RIGHT': 'F', 'DOWN': 'Y', 'LEFT': '>>', 'CENTER': 'B'},
     {'UP': 'P', 'RIGHT': 'V', 'DOWN': 'K', 'LEFT': '>>', 'CENTER': 'J'},
@@ -34,26 +30,34 @@ MOCK_DICTIONARY = ["hello", "how", "are", "you", "thanks", "good", "yue", "zhi",
 COLORS = {
     "bg": "#F5F7FA",
     "surface": "#FFFFFF",
-    "accent": "#03A9F4",  # 主色调蓝
+    "accent": "#03A9F4",
     "accent_dark": "#0277BD",
     "text_main": "#37474F",
     "text_dim": "#90A4AE",
     "shadow": QColor(3, 169, 244, 60),
-    "magic": "#FFC107"  # 联想词的金色
+    "magic": "#FFC107"
 }
 
+# --- 优化样式表：针对 MainContainer 设置背景 ---
 STYLE_SHEET = f"""
+    /* QDialog 本身透明 */
     QDialog {{ 
+        background: transparent; 
+    }}
+
+    /* 主容器：负责显示白色背景和圆角 */
+    #MainContainer {{
         background-color: {COLORS['bg']}; 
         border-radius: 16px; 
         border: 1px solid #CFD8DC; 
     }}
+
     QLineEdit {{
         background-color: #ECEFF1; 
         border: none; 
         border-radius: 8px;
         color: {COLORS['text_main']}; 
-        font-family: "Segoe UI";
+        font-family: "Segoe UI", sans-serif;
         font-size: 28px; 
         font-weight: 600; 
         padding: 12px;
@@ -73,7 +77,6 @@ class CruxButton(QPushButton):
 
         self.lbl_content = QLabel()
         self.lbl_content.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        # 使用 Segoe UI Symbol 或类似字体以确保特殊字符显示美观
         self.lbl_content.setFont(QFont("Segoe UI", 24, QFont.Weight.Bold))
         self.lbl_content.setStyleSheet(f"color: {COLORS['text_main']}; background: transparent;")
         layout.addWidget(self.lbl_content)
@@ -114,7 +117,6 @@ class CruxButton(QPushButton):
         l_color = COLORS['accent'] if l in ['>>', '<<'] else COLORS['text_dim']
         l_weight = "bold" if l in ['>>', '<<'] else "normal"
 
-        # 使用 HTML 表格布局，微调了字体大小和颜色
         html = f"""
         <table width="100%" cellpadding="0" cellspacing="0" style='line-height:100%;'>
             <tr><td width="33%"></td><td width="34%" align="center" style='font-size:16px; color:{COLORS['text_dim']}; padding-bottom:2px'>{u}</td><td width="33%"></td></tr>
@@ -133,16 +135,16 @@ class CruxButton(QPushButton):
             f"<div align='center' style='font-size:56px; font-weight:bold; color:{color}'>{char}</div>")
 
     def set_text_icon(self, text, color=COLORS['text_dim']):
-        """设置纯文本图标"""
         self.lbl_content.setText(f"<div style='font-size:32px; color:{color}'>{text}</div>")
 
 
 class EyeTypingWidget(QDialog):
     def __init__(self, parent=None):
         super().__init__(parent)
+        # 1. 设置无边框和透明背景
         self.setWindowFlags(Qt.WindowType.FramelessWindowHint | Qt.WindowType.Dialog)
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
-        self.setFixedSize(450, 720)  # 稍微加高一点点以容纳新布局
+        self.setFixedSize(450, 750)
         self.setStyleSheet(STYLE_SHEET)
 
         self.STATE_HOME = 0
@@ -157,53 +159,77 @@ class EyeTypingWidget(QDialog):
         self._init_ui()
 
     def _init_ui(self):
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(24, 24, 24, 24)
+        # 2. 最外层布局 (无边距，负责放置 MainContainer)
+        outer_layout = QVBoxLayout(self)
+        outer_layout.setContentsMargins(0, 0, 0, 0)
+
+        # 3. 主容器 (白底、圆角都在这里实现)
+        self.container = QFrame()
+        self.container.setObjectName("MainContainer")  # 对应 QSS ID
+
+        # 添加阴影效果，让窗口看起来更立体
+        shadow = QGraphicsDropShadowEffect(self)
+        shadow.setBlurRadius(15)
+        shadow.setColor(QColor(0, 0, 0, 80))
+        shadow.setOffset(0, 5)
+        self.container.setGraphicsEffect(shadow)
+
+        outer_layout.addWidget(self.container)
+
+        # 4. 内部布局 (在白色容器内部)
+        layout = QVBoxLayout(self.container)
+        layout.setContentsMargins(24, 20, 24, 24)  # 顶部留出空间
         layout.setSpacing(16)
 
-        # --- 1. Top Bar (创新修改) ---
+        # --- Top Bar (修复关闭按钮可见性) ---
         top = QHBoxLayout()
+        top.setContentsMargins(0, 0, 0, 0)
 
-        # 图标：使用 ⦿ (Bullseye/Target) 代表眼动/焦点/捕获
-        # 颜色设置为主题强调色
         lbl_icon = QLabel("⦿")
-        lbl_icon.setStyleSheet(f"font-size: 22px; margin-right: 6px; color: {COLORS['accent']};")
+        lbl_icon.setStyleSheet(f"font-size: 22px; margin-right: 6px; color: {COLORS['accent']}; font-weight: bold;")
 
-        # 标题
         lbl_title = QLabel("CRUX FLOW")
         lbl_title.setStyleSheet(f"color:{COLORS['text_main']}; font-weight:800; font-size: 16px; letter-spacing: 1px;")
 
         lbl_version = QLabel("v2")
-        lbl_version.setStyleSheet(f"color:{COLORS['text_dim']}; font-weight:bold; font-size: 12px; margin-top: 4px;")
+        lbl_version.setStyleSheet(
+            f"color:{COLORS['text_dim']}; font-weight:bold; font-size: 12px; margin-top: 4px; margin-left: 4px;")
 
-        # 关闭按钮：使用更优雅的细体叉号
+        # 关闭按钮
         btn_close = QPushButton("✕")
-        btn_close.setFixedSize(32, 32)
+        btn_close.setFixedSize(36, 36)
         btn_close.setCursor(Qt.CursorShape.PointingHandCursor)
         btn_close.setStyleSheet("""
             QPushButton { 
-                color: #B0BEC5; font-size: 20px; border: none; background: transparent; border-radius: 16px; 
+                color: #B0BEC5; 
+                font-family: Arial, sans-serif;
+                font-size: 18px; 
+                font-weight: bold;
+                border: none; 
+                background: transparent; 
+                border-radius: 18px; 
             }
-            QPushButton:hover { background-color: #FFEBEE; color: #F44336; }
+            QPushButton:hover { 
+                background-color: #FFEBEE; 
+                color: #D32F2F; 
+            }
         """)
-        btn_close.clicked.connect(self.reject)
+        btn_close.clicked.connect(self.close)
 
         top.addWidget(lbl_icon)
         top.addWidget(lbl_title)
         top.addWidget(lbl_version)
         top.addStretch()
         top.addWidget(btn_close)
+
         layout.addLayout(top)
 
-        # --- 2. Suggestion Bar (创新修改) ---
+        # --- Suggestion Bar ---
         self.sugg_layout = QHBoxLayout()
         self.sugg_layout.setSpacing(10)
 
-        # 图标：使用 ✨ (Sparkles) 代表 AI/智能预测
-        # 颜色使用金色
         ai_icon = QLabel("✨")
         ai_icon.setStyleSheet(f"font-size: 18px; color: {COLORS['magic']};")
-        ai_icon.setToolTip("AI Predictions Active")
         self.sugg_layout.addWidget(ai_icon)
 
         self.sugg_labels = []
@@ -214,52 +240,49 @@ class EyeTypingWidget(QDialog):
             self.sugg_layout.addWidget(l)
             self.sugg_labels.append(l)
 
-        # 如果没有建议，用一个弹簧占位保持布局高度（或者直接隐藏，这里选择占位）
         self.sugg_layout.addStretch()
         layout.addLayout(self.sugg_layout)
 
-        # --- 3. Display Area ---
+        # --- Display Area ---
         self.display = QLineEdit()
         self.display.setReadOnly(True)
         self.display.setPlaceholderText("Ready...")
-        # 移除焦点，防止光标闪烁干扰视线
         self.display.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         layout.addWidget(self.display)
 
-        # --- 4. Grid Layout ---
+        # --- Grid Layout ---
         grid_widget = QWidget()
         self.grid = QGridLayout(grid_widget)
-        self.grid.setSpacing(12)  # 稍微紧凑一点
+        self.grid.setSpacing(12)
         self.buttons = {}
 
-        # 放置四个方向键
         for d, (r, c) in {'UP': (0, 1), 'LEFT': (1, 0), 'RIGHT': (1, 2), 'DOWN': (2, 1)}.items():
             btn = CruxButton()
             self.grid.addWidget(btn, r, c)
             self.buttons[d] = btn
 
-        # --- 5. Function Keys (Corner Buttons) ---
-
-        # Backspace: 使用 ⌫
+        # Backspace
         self.btn_bs = CruxButton()
-        self.btn_bs.set_text_icon("⌫", color="#EF5350")  # 红色微调，表示删除
+        self.btn_bs.set_text_icon("⌫", color="#EF5350")
         self.grid.addWidget(self.btn_bs, 0, 2)
 
-        # Space: 使用 ␣
+        # Space
         self.btn_sp = CruxButton()
         self.btn_sp.set_text_icon("␣")
         self.grid.addWidget(self.btn_sp, 2, 2)
 
-        # --- 6. Center Hint (Central Cross) ---
+        # Center Hint
         self.center_hint = QLabel()
         self.center_hint.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.center_hint.setStyleSheet(
-            f"color:{COLORS['accent']}; font-weight:bold; font-size: 13px; line-height: 120%;");
+            f"color:{COLORS['accent']}; font-weight:bold; font-size: 13px; line-height: 120%;")
         self.grid.addWidget(self.center_hint, 1, 1)
 
         layout.addWidget(grid_widget, 1)
 
         self._refresh_ui()
+
+    # ... (on_prediction_received, _handle_home, _handle_group 逻辑保持不变) ...
 
     def on_prediction_received(self, cmd):
         cmd = cmd.upper()
@@ -320,13 +343,11 @@ class EyeTypingWidget(QDialog):
 
     def _refresh_ui(self):
         if self.current_state == self.STATE_HOME:
-            # 使用更简洁的提示，或者用图标
             self.center_hint.setText("LOOK\nTHEN\nBLINK")
             for d, btn in self.buttons.items():
                 btn.set_map_content(MAIN_MENU[d][0])
         elif self.current_state == self.STATE_GROUP:
             c = self.selected_group_data.get('CENTER', '')
-            # 显示当前中心字符
             self.center_hint.setText(f"CENTER\n'{c}'")
             for d, btn in self.buttons.items():
                 btn.set_single_char(self.selected_group_data.get(d, ''))
@@ -347,14 +368,14 @@ class EyeTypingWidget(QDialog):
             if i < len(matches):
                 l.setText(matches[i])
                 l.show()
-                # 建议词背景色稍微淡一点，不要太抢眼
                 l.setStyleSheet(
                     f"background:#E1F5FE; color:{COLORS['accent_dark']}; padding:4px 10px; border-radius:6px; border:1px solid {COLORS['accent']}")
             else:
                 l.hide()
 
-    # 窗口拖动逻辑
+    # 窗口拖动逻辑 (关键：基于 self.container 内部事件或全局事件)
     def mousePressEvent(self, e):
+        # 允许通过拖动任意空白处移动窗口
         if e.button() == Qt.MouseButton.LeftButton:
             self.oldPos = e.globalPosition().toPoint()
 
@@ -364,6 +385,11 @@ class EyeTypingWidget(QDialog):
             self.move(self.x() + delta.x(), self.y() + delta.y())
             self.oldPos = e.globalPosition().toPoint()
 
+    # 增加 ESC 关闭快捷键
+    def keyPressEvent(self, event):
+        if event.key() == Qt.Key.Key_Escape:
+            self.close()
+
 
 if __name__ == "__main__":
     app = QApplication(sys.argv)
@@ -371,7 +397,6 @@ if __name__ == "__main__":
     w.show()
 
 
-    # 键盘模拟测试
     def k(e):
         m = {Qt.Key.Key_Up: 'UP', Qt.Key.Key_Down: 'DOWN', Qt.Key.Key_Left: 'LEFT', Qt.Key.Key_Right: 'RIGHT',
              Qt.Key.Key_Return: 'BLINK_TWICE', Qt.Key.Key_Backspace: 'BLINK_THREE'}
