@@ -1,5 +1,15 @@
 import sys
 import os
+
+import pyqtgraph as pg
+# 开启 OpenGL 硬件加速，这会让绘图从 CPU 转移到 GPU
+pg.setConfigOptions(useOpenGL=True)
+# 设置背景色为白色（符合你的 Material Design 风格）
+pg.setConfigOption('background', 'w')
+pg.setConfigOption('foreground', 'k')
+# 关闭抗锯齿以获得极致性能（波形快速滚动时不需要抗锯齿）
+pg.setConfigOption('antialias', False)
+
 from PyQt6.QtWidgets import QApplication
 from ui.main_window import MainWindow
 

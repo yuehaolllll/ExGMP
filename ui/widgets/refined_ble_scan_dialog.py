@@ -286,7 +286,10 @@ class RefinedBleScanDialog(QDialog):
 
     def _update_connect_button_state(self):
         current = self.device_list.currentItem()
-        self.connect_button.setEnabled(current is not None and current.flags() & Qt.ItemFlag.ItemIsEnabled)
+        # 显式使用 bool() 转换
+        has_selection = current is not None
+        is_enabled = bool(current.flags() & Qt.ItemFlag.ItemIsEnabled) if has_selection else False
+        self.connect_button.setEnabled(has_selection and is_enabled)
 
     def _on_device_selected(self):
         selected_item = self.device_list.currentItem()

@@ -21,12 +21,13 @@ class DisplayFilterPanel(QWidget):
     plot_duration_changed = pyqtSignal(int)
     filter_settings_changed = pyqtSignal(float, float)
     notch_filter_changed = pyqtSignal(bool, float)
+    # 信号：发送 Y 轴缩放值 (0 = Auto, 其他值为固定的 +/- uV)
+    vert_scale_changed = pyqtSignal(int)
 
     def __init__(self, parent=None):
         super().__init__(parent)
 
         # --- 2. 获取图标绝对路径并处理格式 ---
-        # Qt 样式表 (QSS) 即使在 Windows 上也强制要求使用正斜杠 '/'
         icon_plus = resource_path(os.path.join("icons", "plus.svg")).replace("\\", "/")
         icon_minus = resource_path(os.path.join("icons", "minus.svg")).replace("\\", "/")
         icon_arrow_down = resource_path(os.path.join("icons", "drop_down.svg")).replace("\\", "/")
@@ -66,7 +67,7 @@ class DisplayFilterPanel(QWidget):
                 background-color: #E8F0FE;
             }}
 
-            /* 上按钮 (使用 plus.svg) */
+            /* 上按钮 */
             QSpinBox::up-button, QDoubleSpinBox::up-button {{
                 subcontrol-position: top right;
                 border-top-right-radius: 4px;
@@ -75,10 +76,10 @@ class DisplayFilterPanel(QWidget):
             }}
             QSpinBox::up-arrow, QDoubleSpinBox::up-arrow {{
                 image: url("{icon_plus}");
-                width: 10px; height: 10px; /* 根据 SVG 实际大小微调 */
+                width: 10px; height: 10px;
             }}
 
-            /* 下按钮 (使用 minus.svg) */
+            /* 下按钮 */
             QSpinBox::down-button, QDoubleSpinBox::down-button {{
                 subcontrol-position: bottom right;
                 border-bottom-right-radius: 4px;
@@ -104,13 +105,9 @@ class DisplayFilterPanel(QWidget):
                 subcontrol-origin: padding;
                 subcontrol-position: top right;
             }}
-            /* 下拉箭头也暂时用 minus 或者你需要单独找一个 arrow_down.svg */
-            /* 这里为了统一样式，建议还是用 CSS 画一个简单的三角，或者你有 arrow.svg */
             QComboBox::down-arrow {{
                 image: url("{icon_arrow_down}");
-                width: 20px; height: 20px; /* 这里的尺寸决定图标大小 */
-                
-                /* 清除之前的边框绘图代码 */
+                width: 20px; height: 20px;
                 border: none; 
             }}
         """)
@@ -133,7 +130,18 @@ class DisplayFilterPanel(QWidget):
         self._config_spinbox(self.duration_spinbox)
         self._add_row(grid_layout, 0, "Time Window:", self.duration_spinbox)
 
-        # 2. High-pass
+        # 2. Vertical Scale (Y轴幅度) ---
+        self.scale_combo = QComboBox()
+        # 定义常用刻度：Auto, 50uV, 100uV... 10000uV
+        self.scale_options = ["Auto", "50 µV", "100 µV", "200 µV", "400 µV", "1000 µV", "10000 µV"]
+        self.scale_combo.addItems(self.scale_options)
+        self.scale_combo.setCurrentIndex(2)  # 默认选中 Auto
+        self.scale_combo.setCurrentIndex(0)
+
+        self.scale_combo.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        self._add_row(grid_layout, 1, "Vert Scale:", self.scale_combo)
+
+        # 3. High-pass
         self.hp_spinbox = QDoubleSpinBox()
         self.hp_spinbox.setRange(0.0, 100.0)
         self.hp_spinbox.setValue(0.5)
@@ -141,9 +149,9 @@ class DisplayFilterPanel(QWidget):
         self.hp_spinbox.setSingleStep(0.1)
         self.hp_spinbox.setDecimals(2)
         self._config_spinbox(self.hp_spinbox)
-        self._add_row(grid_layout, 1, "High-pass:", self.hp_spinbox)
+        self._add_row(grid_layout, 2, "High-pass:", self.hp_spinbox)
 
-        # 3. Low-pass
+        # 4. Low-pass
         self.lp_spinbox = QDoubleSpinBox()
         self.lp_spinbox.setRange(10.0, 1000.0)
         self.lp_spinbox.setValue(100.0)
@@ -151,7 +159,7 @@ class DisplayFilterPanel(QWidget):
         self.lp_spinbox.setSingleStep(5.0)
         self.lp_spinbox.setDecimals(1)
         self._config_spinbox(self.lp_spinbox)
-        self._add_row(grid_layout, 2, "Low-pass:", self.lp_spinbox)
+        self._add_row(grid_layout, 3, "Low-pass:", self.lp_spinbox)
 
         main_layout.addLayout(grid_layout)
 
@@ -170,7 +178,6 @@ class DisplayFilterPanel(QWidget):
 
         self.notch_checkbox = QCheckBox("Notch Filter")
         self.notch_checkbox.setCursor(Qt.CursorShape.PointingHandCursor)
-        # 这里需要去掉 main.py 全局样式对 checkbox 的影响，或者设置一个简单的样式
         self.notch_checkbox.setStyleSheet("font-weight: 500; color: #3C4043;")
 
         self.notch_freq_combo = QComboBox()
@@ -220,7 +227,8 @@ class DisplayFilterPanel(QWidget):
         layout.addWidget(widget, row, 1)
 
     def sizeHint(self):
-        return QSize(280, 270)
+        # 稍微增加一点高度以容纳新的一行
+        return QSize(280, 300)
 
     def _on_apply_settings(self):
         duration = self.duration_spinbox.value()
@@ -229,18 +237,28 @@ class DisplayFilterPanel(QWidget):
 
         if high_pass >= low_pass and low_pass > 0:
             print(f"Filter Error: HP >= LP")
-            # 错误样式：保留 QSS 结构，只改背景和边框
             self.hp_spinbox.setStyleSheet(self.styleSheet() +
                                           "QDoubleSpinBox { border: 1px solid #D32F2F; background-color: #FCE8E6; }")
             return
         else:
-            # 恢复默认样式，重新设置整个 styleSheet 是最安全的做法
-            # 或者简单调用 update()，但 PyQt 样式覆盖比较顽固
-            # 这里我们简单重置
             self.hp_spinbox.setStyleSheet("")
 
         self.plot_duration_changed.emit(duration)
         self.filter_settings_changed.emit(high_pass, low_pass)
+
+        # --- 处理 Scale 变化 ---
+        scale_text = self.scale_combo.currentText()
+        if "Auto" in scale_text:
+            scale_val = 0  # 0 代表自动
+        else:
+            # 提取字符串中的数字，例如 "200 µV" -> 200
+            try:
+                scale_val = int(scale_text.split()[0])
+            except ValueError:
+                scale_val = 0
+
+        self.vert_scale_changed.emit(scale_val)
+        # ---------------------------
 
         notch_enabled = self.notch_checkbox.isChecked()
         freq_text = self.notch_freq_combo.currentText()
