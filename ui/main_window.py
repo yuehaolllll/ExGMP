@@ -323,6 +323,7 @@ class MainWindow(QMainWindow):
         self.display_filter_panel.plot_duration_changed.connect(self.time_domain_widget.set_plot_duration)
         self.display_filter_panel.filter_settings_changed.connect(self.data_processor.update_filter_settings)
         self.display_filter_panel.notch_filter_changed.connect(self.data_processor.update_notch_filter)
+        self.display_filter_panel.vert_scale_changed.connect(self.time_domain_widget.set_vertical_scale)
 
         self.channel_settings_panel.channel_visibility_changed.connect(self.time_domain_widget.toggle_visibility)
         self.channel_settings_panel.channel_name_changed.connect(self.time_domain_widget.update_channel_name)

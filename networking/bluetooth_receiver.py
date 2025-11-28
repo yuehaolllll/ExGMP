@@ -4,14 +4,17 @@ import asyncio
 import numpy as np
 from PyQt6.QtCore import QObject, pyqtSignal, pyqtSlot
 from bleak import BleakClient
-import struct
 
 # --- 常量 ---
 NOTIFY_CHARACTERISTIC_UUID = "0000fff1-0000-1000-8000-00805f9b34fb"
 PACKET_HEADER = b'\xaa\xbb\xcc\xdd'
-MAX_BUFFER_SIZE = 65536  # 防止缓冲区无限膨胀
 
-# CRC16-CCITT (0x1021) 查表法优化
+# 预分配 256KB 缓冲区 (足够容纳数秒的积压数据)
+MAX_BUFFER_SIZE = 256 * 1024
+# 触发内存整理的阈值 (当 buffer 用了一半时)
+COMPACT_THRESHOLD = MAX_BUFFER_SIZE // 2
+
+# CRC16-CCITT (0x1021) Table
 _crc_table = [
     0x0000, 0x1021, 0x2042, 0x3063, 0x4084, 0x50a5, 0x60c6, 0x70e7,
     0x8108, 0x9129, 0xa14a, 0xb16b, 0xc18c, 0xd1ad, 0xe1ce, 0xf1ef,
@@ -48,22 +51,18 @@ _crc_table = [
 ]
 
 
-def crc16_ccitt_fast(data: bytes) -> int:
-    """
-    核心修复：确保每一步位运算都在16位范围内，防止Python无限精度整数导致的索引越界。
-    """
+def crc16_ccitt_fast(data: memoryview) -> int:
+    """查表法 CRC 计算，兼容 memoryview"""
     crc = 0xFFFF
     for byte in data:
-        # 1. 强制将 index 限制在 0-255 之间 (0xFF)
-        # 2. 强制将 crc 的中间结果限制在 16 位 (0xFFFF)
         index = ((crc >> 8) ^ byte) & 0xFF
         crc = ((crc << 8) ^ _crc_table[index]) & 0xFFFF
     return crc
 
 
 class BluetoothDataReceiver(QObject):
-    # --- 信号定义 ---
     connection_status = pyqtSignal(str)
+    # 明确发送 float32 信号
     raw_data_received = pyqtSignal(np.ndarray)
 
     def __init__(self, device_address, num_channels, frame_size, v_ref, gain):
@@ -76,21 +75,37 @@ class BluetoothDataReceiver(QObject):
         self.gain = gain
         self.num_channels = num_channels
         self.frame_size = frame_size
-        self.lsb_to_uv = (self.v_ref / self.gain / (2 ** 23 - 1)) * 1e6
+
+        # Float32 转换系数
+        self.lsb_to_uv = np.float32(0.0)
+        self._recalc_conversion()
 
         self.num_frames_per_packet = 10
 
-        # 基础包结构定义
+        # 包结构
         self.packet_seq_num_size = 4
         self.packet_crc_size = 2
         self._recalc_packet_size()
 
+        # 预分配内存池
+        self.recv_buffer = bytearray(MAX_BUFFER_SIZE)
+        # memoryview 允许我们零拷贝地操作 bytearray
+        self.view = memoryview(self.recv_buffer)
+
+        self.read_idx = 0
+        self.write_idx = 0
+
         self.last_sequence_number = -1
-        self.buffer = bytearray()
+
+    def _recalc_conversion(self):
+        if self.gain != 0:
+            val = (self.v_ref / self.gain / (2 ** 23 - 1)) * 1e6
+            self.lsb_to_uv = np.float32(val)
+        else:
+            self.lsb_to_uv = np.float32(0.0)
 
     def _recalc_packet_size(self):
         self.packet_payload_size = self.frame_size * self.num_frames_per_packet
-        # Header(4) + Seq(4) + Payload + CRC(2)
         self.packet_size = 4 + self.packet_seq_num_size + self.packet_payload_size + self.packet_crc_size
 
     @pyqtSlot(int)
@@ -98,102 +113,167 @@ class BluetoothDataReceiver(QObject):
         self.num_channels = num_channels
         self.frame_size = 3 + (self.num_channels * 3)
         self._recalc_packet_size()
-        print(f"BluetoothReceiver: Channels updated to {num_channels}, Packet size: {self.packet_size}")
+        print(f"BLE: Channels updated to {num_channels}, PktSize: {self.packet_size}")
 
     @pyqtSlot(float)
     def set_gain(self, new_gain):
         if self.gain != new_gain:
-            print(f"BluetoothDataReceiver: Updating gain to x{new_gain}")
             self.gain = new_gain
-            self.lsb_to_uv = (self.v_ref / self.gain / (2 ** 23 - 1)) * 1e6
+            self._recalc_conversion()
 
     @pyqtSlot(int)
     def set_frames_per_packet(self, frames):
         if self.num_frames_per_packet == frames: return
         self.num_frames_per_packet = frames
         self._recalc_packet_size()
-        print(
-            f"Bluetooth Receiver: Frames/packet set to {self.num_frames_per_packet}, new packet size: {self.packet_size}")
 
-    def _parse_packet_vectorized(self, payload):
+    def _parse_packet_vectorized(self, payload_view):
+        """
+        解析函数
+        输入 payload_view 是一个 memoryview，无拷贝。
+        """
         try:
-            frames = np.frombuffer(payload, dtype=np.uint8).reshape((self.num_frames_per_packet, self.frame_size))
+            # 1. 直接从 View 创建 Numpy 数组 (Zero Copy)
+            raw_bytes = np.frombuffer(payload_view, dtype=np.uint8)
+
+            # 2. Reshape
+            frames = raw_bytes.reshape((self.num_frames_per_packet, self.frame_size))
             channel_data = frames[:, 3:]
-            reshaped_data = channel_data.reshape((self.num_frames_per_packet, self.num_channels, 3))
+            reshaped = channel_data.reshape((self.num_frames_per_packet, self.num_channels, 3))
 
-            b1 = reshaped_data[:, :, 0].astype(np.int32)
-            b2 = reshaped_data[:, :, 1].astype(np.int32)
-            b3 = reshaped_data[:, :, 2].astype(np.int32)
+            # 3. 转换为 int32 以进行位运算 (Copy)
+            b1 = reshaped[:, :, 0].astype(np.int32)
+            b2 = reshaped[:, :, 1].astype(np.int32)
+            b3 = reshaped[:, :, 2].astype(np.int32)
 
+            # 4. 24-bit 组合
             raw_vals = (b1 << 16) | (b2 << 8) | b3
-            raw_vals[raw_vals >= 0x800000] -= 0x1000000
 
+            # 5. 补码处理 (符号位扩展)
+            mask = (raw_vals & 0x800000) != 0
+            raw_vals[mask] -= 0x1000000
+
+            # 6. 转微伏 (Float32)
             return (raw_vals * self.lsb_to_uv).astype(np.float32).T
 
-        except ValueError as e:
-            print(f"Parse Error: {e}")
-            return np.zeros((self.num_channels, 0))
+        except Exception as e:
+            print(f"BLE Parse Error: {e}")
+            return np.zeros((self.num_channels, 0), dtype=np.float32)
 
     def _notification_handler(self, sender, data: bytearray):
-        self.buffer.extend(data)
+        """
+        Bleak 回调函数。
+        这里必须极快，不能阻塞。
+        """
+        data_len = len(data)
 
-        if len(self.buffer) > MAX_BUFFER_SIZE:
-            print("Buffer overflow! Clearing buffer.")
-            self.buffer.clear()
-            return
+        # 1. 检查缓冲区空间，如果不足或需要整理，进行内存移动
+        if self.write_idx + data_len > MAX_BUFFER_SIZE:
+            # 计算有效数据长度
+            valid_len = self.write_idx - self.read_idx
 
+            # 如果即使整理后也装不下（极少见），或者数据本身就太大了
+            if valid_len + data_len > MAX_BUFFER_SIZE:
+                print("BLE Buffer Overflow! Resetting.")
+                self.write_idx = 0
+                self.read_idx = 0
+            else:
+                # 内存整理：将有效数据搬回头部
+                self.recv_buffer[:valid_len] = self.recv_buffer[self.read_idx: self.write_idx]
+                self.write_idx = valid_len
+                self.read_idx = 0
+                # 重置 view 引用
+                self.view = memoryview(self.recv_buffer)
+
+        # 2. 写入数据 (Copy from bleak data to our pre-allocated buffer)
+        self.recv_buffer[self.write_idx: self.write_idx + data_len] = data
+        self.write_idx += data_len
+
+        # 3. 解析循环
         while True:
-            header_index = self.buffer.find(PACKET_HEADER)
-            if header_index == -1:
+            # 剩余数据是否足够一个包
+            if (self.write_idx - self.read_idx) < self.packet_size:
                 break
 
-            if header_index > 0:
-                del self.buffer[:header_index]
+            # 快速检查 Header
+            if self.recv_buffer[self.read_idx: self.read_idx + 4] != PACKET_HEADER:
+                # 失步处理：寻找下一个 Header
+                # 限制搜索范围，防止卡死
+                search_limit = min(self.write_idx, self.read_idx + self.packet_size * 2)
+                header_offset = self.recv_buffer.find(PACKET_HEADER, self.read_idx + 1, search_limit)
 
-            if len(self.buffer) < self.packet_size:
-                break
+                if header_offset == -1:
+                    # 没找到，丢弃这部分数据
+                    self.read_idx = max(self.read_idx + 1, search_limit - 3)
+                    continue
+                else:
+                    self.read_idx = header_offset
+                    # 重新检查长度
+                    if (self.write_idx - self.read_idx) < self.packet_size:
+                        break
 
-            raw_packet = bytes(self.buffer[:self.packet_size])
-            del self.buffer[:self.packet_size]
+            # --- 提取 Header 信息 ---
+            # Seq Num (Big Endian)
+            seq_num = (self.recv_buffer[self.read_idx + 4] << 24) | \
+                      (self.recv_buffer[self.read_idx + 5] << 16) | \
+                      (self.recv_buffer[self.read_idx + 6] << 8) | \
+                      self.recv_buffer[self.read_idx + 7]
 
-            try:
-                seq_num = struct.unpack('>I', raw_packet[4:8])[0]
-                received_crc = struct.unpack('>H', raw_packet[-2:])[0]
-            except struct.error:
-                continue
+            # Received CRC (Big Endian)
+            crc_idx = self.read_idx + self.packet_size - 2
+            received_crc = (self.recv_buffer[crc_idx] << 8) | self.recv_buffer[crc_idx + 1]
 
-            data_to_check = raw_packet[4:-2]
+            # --- CRC 校验 ---
+            # 获取需要校验的数据切片 (Payload + Header部分)
+            # 范围: [Header(4) + Seq(4) + Payload(...)]，不包含最后的 CRC(2)
+            check_view = self.view[self.read_idx + 4: crc_idx]
 
-            # --- 使用修复后的 CRC 函数 ---
-            calculated_crc = crc16_ccitt_fast(data_to_check)
+            calculated_crc = crc16_ccitt_fast(check_view)
 
             if received_crc != calculated_crc:
-                print(f"CRC ERROR: Pkt #{seq_num} | Calc: {calculated_crc:04X} != Recv: {received_crc:04X}")
+                print(f"CRC Err: #{seq_num}")
+                # CRC 错误，丢弃整个包，向前滑动 1 字节尝试重新对齐
+                # 或者直接跳过 packet_size? 通常跳过整个包更安全
+                self.read_idx += self.packet_size
                 continue
 
+            # --- 丢包检测 ---
             if self.last_sequence_number != -1:
                 diff = seq_num - self.last_sequence_number
                 if diff != 1:
                     if not (self.last_sequence_number > 0xFFFFFF00 and seq_num < 100):
-                        print(f"Loss: {diff - 1} packets dropped (Prev: {self.last_sequence_number}, Curr: {seq_num})")
-
+                        # print(f"Loss: {diff - 1} pkts") # 减少打印以免阻塞
+                        pass
             self.last_sequence_number = seq_num
 
-            payload = raw_packet[8:-2]
-            parsed_data = self._parse_packet_vectorized(payload)
+            # --- 解析 Payload ---
+            # 范围: Header(4) + Seq(4) [Start: +8] ... [End: -2] CRC(2)
+            payload_view = self.view[self.read_idx + 8: crc_idx]
+
+            parsed_data = self._parse_packet_vectorized(payload_view)
             self.raw_data_received.emit(parsed_data)
+
+            # --- 推进指针 ---
+            self.read_idx += self.packet_size
 
     @pyqtSlot()
     def run(self):
         self._is_running = True
         self.last_sequence_number = -1
+
+        # 重置 Buffer 状态
+        self.read_idx = 0
+        self.write_idx = 0
+        self.recv_buffer = bytearray(MAX_BUFFER_SIZE)
+        self.view = memoryview(self.recv_buffer)
+
         try:
             loop = asyncio.new_event_loop()
             asyncio.set_event_loop(loop)
             loop.run_until_complete(self._main_ble_loop())
             loop.close()
         except Exception as e:
-            print(f"Error in BLE run loop: {e}")
+            print(f"BLE Run Error: {e}")
         finally:
             self.connection_status.emit("Disconnected")
             self._is_running = False
@@ -201,16 +281,21 @@ class BluetoothDataReceiver(QObject):
     async def _main_ble_loop(self):
         self.connection_status.emit(f"Connecting to {self.address}...")
         try:
-            async with BleakClient(self.address, timeout=20.0) as self.client:
+            async with BleakClient(self.address, timeout=15.0) as self.client:
                 if self.client.is_connected:
                     self.connection_status.emit(f"Connected: {self.address}")
+
+                    # 订阅通知
                     await self.client.start_notify(NOTIFY_CHARACTERISTIC_UUID, self._notification_handler)
+
+                    # 保持连接
                     while self._is_running and self.client.is_connected:
-                        await asyncio.sleep(0.1)
+                        await asyncio.sleep(0.2)  # 稍微增加 sleep 时间减少 CPU 占用
+
                     if self.client.is_connected:
                         await self.client.stop_notify(NOTIFY_CHARACTERISTIC_UUID)
         except Exception as e:
-            self.connection_status.emit(f"Connection Error: {str(e)}")
+            self.connection_status.emit(f"BLE Error: {str(e)}")
 
     def stop(self):
         self._is_running = False
