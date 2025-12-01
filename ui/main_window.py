@@ -12,6 +12,7 @@ import sys
 
 # 导入所有模块
 from networking.data_receiver import DataReceiver
+from networking.device_discovery import DeviceDiscoveryWorker
 from processing.data_processor import DataProcessor
 from ui.widgets.time_domain_widget import TimeDomainWidget
 from ui.widgets.frequency_domain_widget import FrequencyDomainWidget
@@ -376,22 +377,81 @@ class MainWindow(QMainWindow):
         if self.receiver_instance:
             self.receiver_instance.set_gain(new_gain)
 
+    # @pyqtSlot(str, dict)
+    # def on_connect_clicked(self, conn_type, params):
+    #     if self.is_session_running: return
+    #
+    #     if conn_type == "WiFi":
+    #         self.start_session(conn_type)
+    #     elif conn_type == "Bluetooth":
+    #         # 避免多次连接槽
+    #         try:
+    #             self.ble_scan_dialog.device_selected.disconnect(self.on_ble_device_selected)
+    #         except TypeError:
+    #             pass
+    #         self.ble_scan_dialog.device_selected.connect(self.on_ble_device_selected)
+    #         self.ble_scan_dialog.exec_and_scan()
+    #     elif conn_type == "Serial (UART)":
+    #         self.start_session(conn_type, params=params)
     @pyqtSlot(str, dict)
     def on_connect_clicked(self, conn_type, params):
         if self.is_session_running: return
 
         if conn_type == "WiFi":
-            self.start_session(conn_type)
+            # [修改] 拦截 WiFi 连接请求，先执行搜索
+            # params 此时是空的，因为 ConnectionPanel 没有输入框
+            self.start_device_discovery()
+
         elif conn_type == "Bluetooth":
-            # 避免多次连接槽
             try:
                 self.ble_scan_dialog.device_selected.disconnect(self.on_ble_device_selected)
             except TypeError:
                 pass
             self.ble_scan_dialog.device_selected.connect(self.on_ble_device_selected)
             self.ble_scan_dialog.exec_and_scan()
+
         elif conn_type == "Serial (UART)":
             self.start_session(conn_type, params=params)
+
+    def start_device_discovery(self):
+        self.header_bar.update_status_message("Searching for Device (UDP Broadcast)...")
+        print("Starting UDP Discovery...")
+
+        self.discovery_thread = QThread()
+        self.discovery_worker = DeviceDiscoveryWorker()
+        self.discovery_worker.moveToThread(self.discovery_thread)
+
+        # 连接信号
+        self.discovery_thread.started.connect(self.discovery_worker.run)
+        self.discovery_worker.device_found.connect(self.on_device_found)
+        self.discovery_worker.error_occurred.connect(self.on_discovery_error)
+
+        # 资源清理
+        self.discovery_worker.finished.connect(self.discovery_thread.quit)
+        self.discovery_worker.finished.connect(self.discovery_worker.deleteLater)
+        self.discovery_thread.finished.connect(self.discovery_thread.deleteLater)
+
+        self.discovery_thread.start()
+
+    @pyqtSlot(str, str)
+    def on_device_found(self, ip_address, msg):
+        print(f"UI: Device found at {ip_address}")
+        self.header_bar.update_status_message(f"Device found: {ip_address}")
+
+        # 关键：拿到 IP 后，自动调用 start_session
+        self.start_session("WiFi", address=ip_address)
+
+    # 5. [新增] 发现失败回调
+    @pyqtSlot(str)
+    def on_discovery_error(self, error_msg):
+        print(f"Discovery Error: {error_msg}")
+        self.header_bar.update_status_message("Device not found")
+        # 弹窗提示用户检查
+        QMessageBox.warning(self, "Search Failed",
+                            f"{error_msg}\n\n"
+                            "1. Check if device is powered on.\n"
+                            "2. Check if PC and Device are on the same WiFi.\n"
+                            "3. Check Firewall settings (Allow UDP).")
 
     @pyqtSlot(str, str)
     def on_ble_device_selected(self, name, address):
@@ -441,8 +501,12 @@ class MainWindow(QMainWindow):
 
         # 3. 实例化 Receiver
         if conn_type == "WiFi":
+            if not address:
+                # 理论上不应该走到这里，因为 Discovery 保证了 address 存在
+                print("Error: No IP address for WiFi")
+                return
             self.receiver_instance = DataReceiver(
-                num_channels=current_channels, v_ref=V_REF, gain=current_gain
+                target_ip=address, num_channels=current_channels, v_ref=V_REF, gain=current_gain
             )
         elif conn_type == "Bluetooth":
             self.receiver_instance = BluetoothDataReceiver(

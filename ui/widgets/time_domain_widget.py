@@ -171,7 +171,7 @@ class TimeDomainWidget(QWidget):
             p.getViewBox().sigYRangeChanged.connect(partial(self._on_y_range_changed, i))
 
             color = PLOT_COLORS[i % len(PLOT_COLORS)]
-            curve = p.plot(pen=pg.mkPen(color=color, width=1))
+            curve = p.plot(pen=pg.mkPen(color=color, width=2))
 
             self.plot_items.append(p)
             self.plot_curves.append(curve)
